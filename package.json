@@ -1,0 +1,14 @@
+{
+  "name": "tram-evora-planner",
+  "version": "1.0.0",
+  "description": "Ferramenta de planejamento de estações de transporte público em Évora",
+  "main": "server.py",
+  "scripts": {
+    "start": "python3 server.py",
+    "process-data": "python3 process_data.py"
+  },
+  "keywords": ["transporte", "planejamento", "isócronas", "Évora"],
+  "author": "",
+  "license": "MIT"
+}
+

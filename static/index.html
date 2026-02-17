@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Planeamento de Estações - Évora</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+    <div class="container">
+        <!-- Menu Lateral -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <h1>Planeamento de Estações</h1>
+                <p class="subtitle">Évora - Transportes Públicos</p>
+            </div>
+            
+            <div class="sidebar-content">
+                <div class="instructions">
+                    <p>📌 Clique no mapa para adicionar uma estação</p>
+                    <p>🖱️ Arraste os pontos para reposicionar</p>
+                    <p>🗑️ Clique no X para remover</p>
+                    <p style="margin-top: 8px; font-size: 12px; color: #718096;">⏳ As isócronas são calculadas com base em caminhos reais a pé</p>
+                </div>
+                
+                <div class="stats-section">
+                    <h2>Estatísticas de População</h2>
+                    
+                    <div class="stat-card total">
+                        <div class="stat-label">População Total</div>
+                        <div class="stat-value" id="total-population">0</div>
+                        <div class="stat-breakdown">
+                            <span class="breakdown-item">
+                                <span class="breakdown-label">Área Primária (5 min):</span>
+                                <span class="breakdown-value" id="total-pop-5min">0</span>
+                            </span>
+                            <span class="breakdown-item">
+                                <span class="breakdown-label">Área Secundária (10 min):</span>
+                                <span class="breakdown-value" id="total-pop-10min">0</span>
+                            </span>
+                        </div>
+                    </div>
+                    
+                    <div class="stations-list" id="stations-list">
+                        <h3>Estações</h3>
+                        <div id="stations-container">
+                            <p class="no-stations">Nenhuma estação adicionada</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+        
+        <!-- Mapa -->
+        <main class="map-container">
+            <div id="map"></div>
+            <div class="map-controls">
+                <button class="btn-clear" id="btn-clear">Limpar Todas</button>
+                <button class="btn-export" id="btn-export">Exportar CSV</button>
+                <button class="btn-import" id="btn-import">Importar CSV</button>
+                <input type="file" id="file-input" accept=".csv" style="display: none;">
+            </div>
+        </main>
+    </div>
+    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>
+
