@@ -106,9 +106,6 @@ function initMap() {
 
     // Wire up control buttons
     document.getElementById('btn-clear').addEventListener('click', clearAllStations);
-    document.getElementById('btn-export').addEventListener('click', exportToCSV);
-    document.getElementById('btn-import').addEventListener('click', () => document.getElementById('file-input').click());
-    document.getElementById('file-input').addEventListener('change', importFromCSV);
     document.getElementById('btn-save-project').addEventListener('click', saveProject);
     document.getElementById('btn-load-project').addEventListener('click', () => document.getElementById('project-file-input').click());
     document.getElementById('project-file-input').addEventListener('change', loadProject);
@@ -1226,6 +1223,10 @@ async function loadProject(event) {
 
         // Restore scenario
         densityOverrides = project.densityOverrides || {};
+        // Refresh census layer styles to reflect restored overrides
+        if (censusLayer) {
+            censusLayer.setStyle(feature => getCensusStyle(feature));
+        }
         newUrbanizations = [];
         urbanizationLayers = [];
 
@@ -1274,88 +1275,6 @@ async function loadProject(event) {
     }
 
     event.target.value = '';
-}
-
-// ============================================================
-//                  CSV EXPORT / IMPORT
-// ============================================================
-async function exportToCSV() {
-    if (stations.length === 0) { alert('Não há estações para exportar'); return; }
-    try {
-        const response = await fetch('/api/export-points', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                points: stations.map(s => {
-                    const g = getGroupForStation(s);
-                    return {
-                        id: s.id, lat: s.lat, lng: s.lng,
-                        group_id: s.groupId, group_name: g.name,
-                        population_5min: s.population_5min || 0,
-                        population_10min: s.population_10min || 0,
-                        population_total: s.population_total || 0
-                    };
-                })
-            })
-        });
-        if (!response.ok) throw new Error('Erro ao exportar CSV');
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url; a.download = `territorio_evora_${new Date().toISOString().split('T')[0]}.csv`;
-        document.body.appendChild(a); a.click(); URL.revokeObjectURL(url); document.body.removeChild(a);
-    } catch (e) { console.error('Erro ao exportar CSV:', e); alert('Erro: ' + e.message); }
-}
-
-async function importFromCSV(event) {
-    const file = event.target.files[0];
-    if (!file || !file.name.endsWith('.csv')) { alert('Selecione um ficheiro CSV'); return; }
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-        const response = await fetch('/api/import-points', { method: 'POST', body: formData });
-        if (!response.ok) { const err = await response.json(); throw new Error(err.error || 'Erro'); }
-        const data = await response.json();
-
-        if (data.success && data.points && data.points.length > 0) {
-            saveState();
-            const addMode = confirm(`Encontrados ${data.count} pontos.\n\nOK = Adicionar\nCancelar = Substituir`);
-
-            // Reconstruct groups from import if group_name present
-            const importedGroups = {};
-            data.points.forEach(p => {
-                if (p.group_name && !importedGroups[p.group_name]) {
-                    importedGroups[p.group_name] = true;
-                }
-            });
-            Object.keys(importedGroups).forEach(gn => {
-                if (!groups.find(g => g.name === gn)) createGroup(gn);
-            });
-
-            const resolveGroupId = (point) => {
-                if (point.group_name) {
-                    const g = groups.find(g => g.name === point.group_name);
-                    if (g) return g.id;
-                }
-                return activeGroupId || groups[0].id;
-            };
-
-            if (addMode) {
-                data.points.forEach(p => {
-                    const exists = stations.some(s => Math.abs(s.lat - p.lat) < 0.0001 && Math.abs(s.lng - p.lng) < 0.0001);
-                    if (!exists) stations.push({ id: p.id || Date.now() + Math.random(), lat: p.lat, lng: p.lng, groupId: resolveGroupId(p) });
-                });
-            } else {
-                stations = data.points.map(p => ({ id: p.id || Date.now() + Math.random(), lat: p.lat, lng: p.lng, groupId: resolveGroupId(p) }));
-            }
-
-            event.target.value = '';
-            renderGroups(); updateMap(); updateSidebar(); calculatePopulation();
-            alert(`Importados ${data.count} pontos!`);
-        } else { alert('Nenhum ponto válido encontrado'); }
-    } catch (e) { console.error('Erro import:', e); alert('Erro: ' + e.message); event.target.value = ''; }
 }
 
 // ============================================================

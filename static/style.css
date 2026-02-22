@@ -499,15 +499,7 @@ html, body {
     gap: 8px;
 }
 
-.map-controls-divider {
-    height: 1px;
-    background: rgba(0,0,0,0.15);
-    margin: 4px 0;
-}
-
 .btn-clear,
-.btn-export,
-.btn-import,
 .btn-save-project,
 .btn-load-project {
     color: white;
@@ -529,24 +521,6 @@ html, body {
     background: #f56565;
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
-}
-
-.btn-export {
-    background: #48bb78;
-}
-
-.btn-export:hover {
-    background: #38a169;
-    transform: translateY(-1px);
-}
-
-.btn-import {
-    background: #4299e1;
-}
-
-.btn-import:hover {
-    background: #3182ce;
-    transform: translateY(-1px);
 }
 
 .btn-save-project {
