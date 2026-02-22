@@ -74,6 +74,11 @@ function initMap() {
 
     map = L.map('map').setView(EVORA_CENTER, EVORA_ZOOM);
 
+    // Custom pane for census layer — sits below isochrones (overlayPane z=400)
+    map.createPane('censusPane');
+    map.getPane('censusPane').style.zIndex = 200;
+    map.getPane('censusPane').style.pointerEvents = 'auto';
+
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors',
         maxZoom: 19
@@ -87,8 +92,10 @@ function initMap() {
     map.on('click', function(e) {
         if (activeTab === 'stations' && !isUpdating) {
             addStation(e.latlng.lat, e.latlng.lng);
+        } else if (activeTab === 'scenario') {
+            // Click on empty map area closes the edit panel
+            cancelEdit();
         }
-        // scenario clicks are handled by the censusLayer click handler
     });
 
     // Draw events
@@ -127,6 +134,12 @@ function initMap() {
     document.getElementById('btn-apply-density').addEventListener('click', applyDensityEdit);
     document.getElementById('btn-revert-density').addEventListener('click', revertDensityEdit);
     document.getElementById('btn-cancel-edit').addEventListener('click', cancelEdit);
+    document.getElementById('btn-close-edit').addEventListener('click', cancelEdit);
+
+    // ESC closes the edit panel
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') cancelEdit();
+    });
     document.getElementById('edit-density-select').addEventListener('change', () => {
         const hasValue = document.getElementById('edit-density-select').value !== '';
         document.getElementById('edit-coverage-field').classList.toggle('hidden', !hasValue);
@@ -754,6 +767,7 @@ async function loadCensusLayer() {
         censusGeoJSON = await res.json();
 
         censusLayer = L.geoJSON(censusGeoJSON, {
+            pane: 'censusPane',
             style: (feature) => getCensusStyle(feature),
             onEachFeature: (feature, layer) => {
                 layer.on('click', (e) => {
@@ -764,6 +778,10 @@ async function loadCensusLayer() {
                 });
             }
         }).addTo(map);
+
+        // Bring existing isochrone layers to the front so they're not buried by the census layer
+        isochroneLayers.forEach(l => { try { l.bringToFront(); } catch {} });
+
     } catch (err) {
         console.error('Erro ao carregar camada de censos:', err);
     }
@@ -800,7 +818,17 @@ function getCensusStyle(feature) {
 }
 
 function selectCensusFeature(feature, layer) {
+    // Restore style of previously selected layer before switching
+    if (selectedCensusFeature && selectedCensusFeature.layer !== layer) {
+        selectedCensusFeature.layer.setStyle(getCensusStyle(selectedCensusFeature.feature));
+    }
+
     selectedCensusFeature = { feature, layer };
+
+    // Highlight the selected BGRI with a distinct ring
+    layer.setStyle({ color: '#4c51bf', weight: 3, dashArray: null, fillOpacity: 0.2 });
+    layer.bringToFront();
+
     const props = feature.properties;
     const bgriId = props.BGRI2021 || props.SUBSECCAO || props.OBJECTID;
     const pop = props.N_INDIVIDUOS || 0;
@@ -892,6 +920,9 @@ function revertDensityEdit() {
 }
 
 function cancelEdit() {
+    if (selectedCensusFeature) {
+        selectedCensusFeature.layer.setStyle(getCensusStyle(selectedCensusFeature.feature));
+    }
     selectedCensusFeature = null;
     document.getElementById('edit-panel').classList.add('hidden');
 }
@@ -1268,7 +1299,9 @@ async function loadProject(event) {
         updateScenarioSummary();
         saveState();
 
-        alert(`Projeto carregado: ${groups.length} grupo(s), ${stations.length} estação(ões)`);
+        const urbs = project.newUrbanizations ? project.newUrbanizations.length : 0;
+        const overrides = Object.keys(project.densityOverrides || {}).length;
+        alert(`Projeto carregado:\n• ${groups.length} grupo(s)\n• ${stations.length} estação(ões)\n• ${overrides} alteração(s) de densidade BGRI\n• ${urbs} urbanização(es) no cenário`);
     } catch (e) {
         console.error('Erro ao carregar projeto:', e);
         alert('Erro ao carregar projeto: ' + e.message);

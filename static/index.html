@@ -122,45 +122,7 @@
                         </div>
                     </div>
 
-                    <!-- Edit panel for selected subsection -->
-                    <div class="edit-panel hidden" id="edit-panel">
-                        <h2>Editar Subsecção</h2>
-                        <div class="edit-panel-content">
-                            <div class="edit-field">
-                                <label>ID BGRI</label>
-                                <span id="edit-bgri-id">—</span>
-                            </div>
-                            <div class="edit-field">
-                                <label>Pop. Atual (censos)</label>
-                                <span id="edit-current-pop">—</span>
-                            </div>
-                            <div class="edit-field">
-                                <label>Área (ha)</label>
-                                <span id="edit-area">—</span>
-                            </div>
-                            <div class="edit-field">
-                                <label>Densidade Atual (hab/ha)</label>
-                                <span id="edit-current-density">—</span>
-                            </div>
-                            <div class="edit-field">
-                                <label>Novo tipo de densidade</label>
-                                <select id="edit-density-select"></select>
-                            </div>
-                            <div class="edit-field hidden" id="edit-coverage-field">
-                                <label>Cobertura do solo: <span id="edit-coverage-value">40%</span></label>
-                                <input type="range" id="edit-coverage" min="5" max="100" value="40">
-                            </div>
-                            <div class="edit-field">
-                                <label>Pop. Estimada</label>
-                                <span id="edit-estimated-pop" class="highlight">—</span>
-                            </div>
-                            <div class="edit-actions">
-                                <button class="btn-apply-density" id="btn-apply-density">Aplicar</button>
-                                <button class="btn-revert-density hidden" id="btn-revert-density" title="Repor valores originais dos censos">Reverter</button>
-                                <button class="btn-cancel-edit" id="btn-cancel-edit">Cancelar</button>
-                            </div>
-                        </div>
-                    </div>
+
                 </div>
             </div>
         </aside>
@@ -169,7 +131,7 @@
         <main class="map-container">
             <div id="map"></div>
             <div class="map-controls">
-                <button class="btn-clear" id="btn-clear">Limpar Todas</button>
+                <button class="btn-clear" id="btn-clear">Limpar estações</button>
                 <button class="btn-save-project" id="btn-save-project">&#128190; Guardar</button>
                 <button class="btn-load-project" id="btn-load-project">&#128193; Carregar</button>
                 <input type="file" id="project-file-input" accept=".json" style="display: none;">
@@ -208,6 +170,51 @@
             <div class="modal-actions">
                 <button class="btn-apply-density" id="btn-create-urbanization">Criar</button>
                 <button class="btn-cancel-edit" id="btn-cancel-urbanization">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Floating edit panel (BGRI subsection editor) -->
+    <div class="edit-panel hidden" id="edit-panel">
+        <div class="edit-panel-header">
+            <h2>Editar Subsecção</h2>
+            <button class="btn-close-edit" id="btn-close-edit" title="Fechar (ESC)">&#x2715;</button>
+        </div>
+        <div class="edit-panel-content">
+            <div class="edit-fields-grid">
+                <div class="edit-field">
+                    <label>ID BGRI</label>
+                    <span id="edit-bgri-id">—</span>
+                </div>
+                <div class="edit-field">
+                    <label>Pop. atual</label>
+                    <span id="edit-current-pop">—</span>
+                </div>
+                <div class="edit-field">
+                    <label>Área (ha)</label>
+                    <span id="edit-area">—</span>
+                </div>
+                <div class="edit-field">
+                    <label>Densidade (hab/ha)</label>
+                    <span id="edit-current-density">—</span>
+                </div>
+            </div>
+            <div class="edit-field" style="margin-top:10px;">
+                <label>Novo tipo de densidade</label>
+                <select id="edit-density-select"></select>
+            </div>
+            <div class="edit-field hidden" id="edit-coverage-field">
+                <label>Cobertura do solo: <span id="edit-coverage-value">40%</span></label>
+                <input type="range" id="edit-coverage" min="5" max="100" value="40">
+            </div>
+            <div class="edit-estimate-row">
+                <span>Pop. estimada:</span>
+                <span id="edit-estimated-pop" class="highlight">—</span>
+            </div>
+            <div class="edit-actions">
+                <button class="btn-apply-density" id="btn-apply-density">Aplicar</button>
+                <button class="btn-revert-density hidden" id="btn-revert-density" title="Repor valores originais dos censos">Reverter</button>
+                <button class="btn-cancel-edit" id="btn-cancel-edit">Cancelar</button>
             </div>
         </div>
     </div>

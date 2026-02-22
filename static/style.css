@@ -698,23 +698,92 @@ html, body {
 }
 
 /* Edit Panel */
+/* ---- Floating BGRI edit panel ---- */
 .edit-panel {
-    background: #fffff0;
-    border: 1px solid #ecc84b;
-    border-radius: 8px;
-    padding: 16px;
-    margin-top: 16px;
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 2000;
+    width: 300px;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18), 0 2px 8px rgba(0,0,0,0.10);
+    border-top: 4px solid #667eea;
+    padding: 0;
+    opacity: 1;
+    transform: translateY(0);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    pointer-events: auto;
 }
 
 .edit-panel.hidden {
-    display: none;
+    opacity: 0;
+    transform: translateY(20px);
+    pointer-events: none;
 }
 
-.edit-panel h2 {
-    font-size: 15px;
-    font-weight: 600;
-    color: #744210;
-    margin-bottom: 12px;
+.edit-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px 8px;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.edit-panel-header h2 {
+    font-size: 14px;
+    font-weight: 700;
+    color: #2d3748;
+    margin: 0;
+}
+
+.btn-close-edit {
+    background: none;
+    border: none;
+    font-size: 16px;
+    color: #a0aec0;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    line-height: 1;
+    transition: color 0.15s, background 0.15s;
+}
+
+.btn-close-edit:hover {
+    color: #4a5568;
+    background: #f7fafc;
+}
+
+.edit-panel-content {
+    padding: 12px 14px 14px;
+}
+
+.edit-fields-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px 12px;
+    margin-bottom: 4px;
+}
+
+.edit-fields-grid .edit-field {
+    margin-bottom: 0;
+}
+
+.edit-estimate-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #f7f8ff;
+    border: 1px solid #e0e4ff;
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin: 10px 0 12px;
+    font-size: 13px;
+    color: #4a5568;
+}
+
+.edit-estimate-row .highlight {
+    font-size: 18px !important;
 }
 
 .edit-field {
