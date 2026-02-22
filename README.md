@@ -1,116 +1,90 @@
 # Mobilidade e Território — Desenvolvimento Orientado ao Transporte (TOD) — Évora
 
-Ferramenta web interativa para planeamento urbano orientado ao transporte público em Évora. Permite definir grupos de paragens/estações, calcular isócronas reais a pé, estimar população abrangida, simular cenários de densificação urbana e criar novas urbanizações com estimativas de habitação.
+Ferramenta web interativa para planeamento urbano orientado ao transporte público em Évora. Combina o posicionamento de paragens/estações com a simulação de cenários de densificação urbana, permitindo estimar a população abrangida por redes de transporte e projetar o impacto de alterações ao uso do solo.
 
 ## Funcionalidades
 
-**Planeamento de paragens/estações:**
-- 🗺️ Mapa interativo centrado em Évora
-- 📍 Adicionar paragens/estações clicando no mapa, com organização em grupos com cores
-- 🖱️ Arrastar pontos para reposicionar
-- ⏱️ Isócronas reais de 5 e 10 minutos a pé (OpenRouteService)
-- 👥 Cálculo de população residente nas áreas de captação (sem dupla contagem)
-- 📊 Estatísticas por grupo e globais em tempo real
+### Planeamento de paragens / estações
 
-**Cenário urbano (TOD):**
-- 🏘️ Visualização coroplética das subsecções estatísticas (BGRI) por densidade
-- ✏️ Edição da densidade de cada subsecção para simular densificação
-- 🏗️ Criação de novas urbanizações com estimativa de habitação
-- 📈 Comparação entre população base (censos) e projetada no cenário
+- Adicionar paragens clicando no mapa; arrastar para reposicionar; remover com ×
+- Organização em **grupos com nome e cor** personalizáveis; visibilidade por grupo
+- **Isócronas reais** de 5 e 10 minutos a pé via OpenRouteService (fallback para círculo quando a API não está disponível)
+- Cálculo de **população residente** nas áreas de captação, sem dupla contagem entre estações sobrepostas
+- Estatísticas por grupo (5 min / 10 min / total) e totais globais em tempo real
+- Undo/redo com Ctrl+Z / Ctrl+Shift+Z
 
-**Projeto:**
-- 💾 Guardar e carregar projetos completos em JSON
-- 📤 Exportar/importar pontos em CSV
-- ↩️ Undo/redo (Ctrl+Z / Ctrl+Shift+Z)
+### Cenário urbano (TOD)
+
+- Visualização **coroplética** de todas as subsecções estatísticas (BGRI) por densidade populacional (hab/ha)
+- **Painel flutuante de edição**: clicar numa BGRI abre um painel sobreposto ao mapa com densidade atual, tipo de uso do solo e cobertura edificável; fecha com ESC ou clique fora
+- Aplicar **overrides de densidade** por subsecção; reverter para valores originais dos censos
+- **Novas urbanizações**: desenhar um polígono no mapa, definir tipo de densidade e cobertura do solo, obter estimativa de população instantânea; nome editável inline
+- As novas urbanizações **substituem** a população das BGRI que cobrem (sem dupla contagem)
+- Resumo do cenário: população base (censos) vs. projetada vs. delta
+- Recalcular catchment com as alterações do cenário ativas
+
+### Gestão de projetos
+
+- **Guardar projeto**: exporta um ficheiro JSON com grupos, estações, todas as alterações de densidade por BGRI e urbanizações desenhadas
+- **Carregar projeto**: restaura o estado completo, incluindo o cenário urbano e as isócronas
+
+## Stack
+
+| Camada | Tecnologias |
+|---|---|
+| Backend | Python, Flask, GeoPandas, Shapely, Requests |
+| Frontend | HTML/CSS/JS vanilla, Leaflet 1.9.4, Turf.js 6.5.0, Leaflet.draw 1.0.4 |
+| Dados | BGRI 2021 (Instituto Nacional de Estatística), OpenStreetMap via OpenRouteService |
+| Isócronas | OpenRouteService Isochrones API (foot-walking) |
 
 ## Instalação
 
-1. **Instalar dependências Python:**
+1. **Criar ambiente virtual e instalar dependências:**
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2. **Configurar a API Key do OpenRouteService:**
+2. **Configurar a chave da API OpenRouteService:**
 
-   A aplicação utiliza a API do [OpenRouteService](https://openrouteservice.org/) para calcular isócronas. É necessário obter uma chave de API gratuita:
+   Obter chave gratuita em https://openrouteservice.org/dev/#/signup
 
-   - Criar conta em: https://openrouteservice.org/dev/#/signup
-   - Copiar a API Key gerada
-   - Criar o ficheiro `.env` a partir do template:
-     ```bash
-     cp .env.example .env
-     ```
-   - Editar o ficheiro `.env` e substituir `a_tua_api_key_aqui` pela tua chave:
-     ```
-     ORS_API_KEY=a_tua_chave_real_aqui
-     ```
+   ```bash
+   cp .env.example .env
+   # editar .env e substituir o valor de ORS_API_KEY
+   ```
 
-   > ⚠️ O ficheiro `.env` está no `.gitignore` e **não deve ser commitado** no repositório.
+   > O ficheiro `.env` está no `.gitignore` e não deve ser commitado.
 
-3. **Processar dados de censos:**
+3. **Processar os dados de censos:**
 ```bash
 python3 process_data.py
 ```
+   Lê `BGRI2021_0705/BGRI2021_0705.gpkg` e gera `data/census_data.geojson` e `data/metadata.json`.
 
-Isso irá:
-- Ler o arquivo `BGRI2021_0705/BGRI2021_0705.gpkg`
-- Converter para GeoJSON em `data/census_data.geojson`
-- Criar metadados em `data/metadata.json`
-
-## Uso
-
-1. **Iniciar o servidor:**
+4. **Iniciar o servidor:**
 ```bash
-source venv/bin/activate
-python3 server.py
+source venv/bin/activate && python3 server.py
 ```
+   Abrir em `http://localhost:5000`
 
-2. **Abrir no navegador:**
-```
-http://localhost:5000
-```
-
-> 💡 Se a `ORS_API_KEY` não estiver definida, a aplicação mostrará um aviso no terminal e as isócronas usarão círculos como fallback.
-
-## Como usar
-
-1. **Adicionar estação:** Clique em qualquer ponto do mapa
-2. **Mover estação:** Arraste o marcador para reposicionar
-3. **Remover estação:** Clique no botão "×" na sidebar
-4. **Limpar todas:** Clique no botão "Limpar Todas" no mapa
-
-## Áreas de Captação
-
-- **Área Primária (5 min):** População dentro da área acessível em 5 minutos a pé
-- **Área Secundária (10 min):** População dentro da área acessível em 10 minutos a pé (excluindo a área primária)
-
-As isócronas são calculadas usando a API do OpenRouteService, que considera os caminhos reais a pé baseados na rede viária do OpenStreetMap. A velocidade a pé considerada é de aproximadamente 5 km/h (~1.39 m/s).
-
-Quando as isócronas de diferentes estações se sobrepõem, o cálculo de população **evita contagem dupla** — cada subsecção estatística é contabilizada apenas uma vez, mesmo que esteja abrangida por múltiplas estações. Assim, a população total apresentada reflete o número real de residentes cobertos pela rede de estações.
-
-Se a API não estiver disponível, o sistema usa círculos como fallback.
-
-## Estrutura do Projeto
+## Estrutura do projeto
 
 ```
 .
-├── BGRI2021_0705/          # Dados de censos originais
-├── data/                    # Dados processados (GeoJSON)
-├── static/                  # Frontend (HTML, CSS, JS)
-│   ├── index.html
-│   ├── style.css
-│   └── app.js
-├── server.py               # Servidor Flask
-├── process_data.py         # Script de processamento
-├── requirements.txt        # Dependências Python
+├── BGRI2021_0705/          # Dados de censos originais (.gpkg)
+├── data/                   # Dados processados (GeoJSON + metadados)
+├── static/
+│   ├── index.html          # Estrutura da interface
+│   ├── style.css           # Estilos
+│   └── app.js              # Lógica do cliente (Leaflet, estado, API calls)
+├── server.py               # API Flask (isócronas, cálculo de população, export)
+├── process_data.py         # Pré-processamento dos dados BGRI
+├── requirements.txt
 └── README.md
 ```
 
-## Tecnologias
-
-- **Backend:** Python, Flask, GeoPandas, Shapely, Requests
 - **Frontend:** HTML5, CSS3, JavaScript (vanilla)
 - **Mapa:** Leaflet.js
 - **Cálculos geográficos:** Turf.js
