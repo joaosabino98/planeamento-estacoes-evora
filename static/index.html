@@ -3,8 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Planeamento de Estações - Évora</title>
+    <title>Planeamento de Estações 2.0 - Évora</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
     <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -13,39 +14,151 @@
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <h1>Planeamento de Estações</h1>
-                <p class="subtitle">Évora - Transportes Públicos</p>
+                <p class="subtitle">Évora — Transportes Públicos v2.0</p>
+            </div>
+
+            <!-- Tabs -->
+            <div class="tab-bar">
+                <button class="tab-btn active" data-tab="stations" id="tab-stations-btn">Estações</button>
+                <button class="tab-btn" data-tab="scenario" id="tab-scenario-btn">Cenário Urbano</button>
             </div>
             
-            <div class="sidebar-content">
-                <div class="instructions">
-                    <p>📌 Clique no mapa para adicionar uma estação</p>
-                    <p>🖱️ Arraste os pontos para reposicionar</p>
-                    <p>🗑️ Clique no X para remover</p>
-                    <p style="margin-top: 8px; font-size: 12px; color: #718096;">⏳ As isócronas são calculadas com base em caminhos reais a pé</p>
-                </div>
-                
-                <div class="stats-section">
-                    <h2>Estatísticas de População</h2>
-                    
-                    <div class="stat-card total">
-                        <div class="stat-label">População Total</div>
-                        <div class="stat-value" id="total-population">0</div>
-                        <div class="stat-breakdown">
-                            <span class="breakdown-item">
-                                <span class="breakdown-label">Área Primária (5 min):</span>
-                                <span class="breakdown-value" id="total-pop-5min">0</span>
-                            </span>
-                            <span class="breakdown-item">
-                                <span class="breakdown-label">Área Secundária (10 min):</span>
-                                <span class="breakdown-value" id="total-pop-10min">0</span>
-                            </span>
-                        </div>
+            <!-- ============ TAB: ESTAÇÕES ============ -->
+            <div class="tab-content active" id="tab-stations">
+                <div class="sidebar-content">
+                    <div class="instructions">
+                        <p>📌 Clique no mapa para adicionar uma estação</p>
+                        <p>🖱️ Arraste os pontos para reposicionar</p>
+                        <p>🗑️ Clique no X para remover</p>
+                        <p style="margin-top: 8px; font-size: 12px; color: #718096;">⏳ As isócronas são calculadas com base em caminhos reais a pé</p>
                     </div>
                     
-                    <div class="stations-list" id="stations-list">
-                        <h3>Estações</h3>
-                        <div id="stations-container">
-                            <p class="no-stations">Nenhuma estação adicionada</p>
+                    <!-- Grupos -->
+                    <div class="groups-section">
+                        <div class="section-header">
+                            <h2>Grupos</h2>
+                            <button class="btn-small btn-add-group" id="btn-add-group" title="Novo grupo">+ Novo</button>
+                        </div>
+                        <div class="groups-list" id="groups-list">
+                            <!-- Populated by JS -->
+                        </div>
+                    </div>
+
+                    <div class="stats-section">
+                        <h2>Estatísticas de População</h2>
+                        
+                        <!-- Per-group summaries -->
+                        <div id="group-stats-container"></div>
+
+                        <div class="stat-card total">
+                            <div class="stat-label">População Total (Global)</div>
+                            <div class="stat-value" id="total-population">0</div>
+                            <div class="stat-breakdown">
+                                <span class="breakdown-item">
+                                    <span class="breakdown-label">Área Primária (5 min):</span>
+                                    <span class="breakdown-value" id="total-pop-5min">0</span>
+                                </span>
+                                <span class="breakdown-item">
+                                    <span class="breakdown-label">Área Secundária (10 min):</span>
+                                    <span class="breakdown-value" id="total-pop-10min">0</span>
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <div class="stations-list" id="stations-list">
+                            <h3>Estações</h3>
+                            <div id="stations-container">
+                                <p class="no-stations">Nenhuma estação adicionada</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ============ TAB: CENÁRIO URBANO ============ -->
+            <div class="tab-content" id="tab-scenario">
+                <div class="sidebar-content">
+                    <div class="instructions">
+                        <p>🏘️ Clique numa subsecção no mapa para alterar a densidade</p>
+                        <p>✏️ Use "Desenhar" para criar novas urbanizações</p>
+                        <p>📊 Clique em "Recalcular" para atualizar as estimativas</p>
+                    </div>
+
+                    <!-- Density types legend -->
+                    <div class="density-legend">
+                        <h2>Tipos de Densidade</h2>
+                        <div class="density-types-list" id="density-types-list"></div>
+                    </div>
+
+                    <!-- Scenario summary -->
+                    <div class="scenario-summary">
+                        <h2>Resumo do Cenário</h2>
+                        <div class="stat-card">
+                            <div class="scenario-stat-row">
+                                <span class="stat-label">Pop. Base (censos)</span>
+                                <span class="stat-value-sm" id="scenario-base-pop">—</span>
+                            </div>
+                            <div class="scenario-stat-row">
+                                <span class="stat-label">Pop. Projetada</span>
+                                <span class="stat-value-sm" id="scenario-proj-pop">—</span>
+                            </div>
+                            <div class="scenario-stat-row">
+                                <span class="stat-label">Diferença</span>
+                                <span class="stat-value-sm" id="scenario-delta">—</span>
+                            </div>
+                        </div>
+                        <button class="btn-recalc" id="btn-recalc">Recalcular Catchment</button>
+                        <button class="btn-reset-scenario" id="btn-reset-scenario">Limpar Alterações</button>
+                    </div>
+
+                    <!-- New urbanizations list -->
+                    <div class="urbanizations-section">
+                        <div class="section-header">
+                            <h2>Novas Urbanizações</h2>
+                            <button class="btn-small btn-draw-urbanization" id="btn-draw-urbanization" title="Desenhar nova urbanização">+ Desenhar</button>
+                        </div>
+                        <div id="urbanizations-list">
+                            <p class="no-stations">Nenhuma urbanização criada</p>
+                        </div>
+                    </div>
+
+                    <!-- Edit panel for selected subsection -->
+                    <div class="edit-panel hidden" id="edit-panel">
+                        <h2>Editar Subsecção</h2>
+                        <div class="edit-panel-content">
+                            <div class="edit-field">
+                                <label>ID BGRI</label>
+                                <span id="edit-bgri-id">—</span>
+                            </div>
+                            <div class="edit-field">
+                                <label>Pop. Atual (censos)</label>
+                                <span id="edit-current-pop">—</span>
+                            </div>
+                            <div class="edit-field">
+                                <label>Área (ha)</label>
+                                <span id="edit-area">—</span>
+                            </div>
+                            <div class="edit-field">
+                                <label>Densidade Atual (hab/ha)</label>
+                                <span id="edit-current-density">—</span>
+                            </div>
+                            <div class="edit-field">
+                                <label>Novo tipo de densidade</label>
+                                <select id="edit-density-select"></select>
+                            </div>
+                            <div class="edit-field hidden" id="edit-coverage-field">
+                                <label>Cobertura do solo: <span id="edit-coverage-value">40%</span></label>
+                                <input type="range" id="edit-coverage" min="5" max="100" value="40">
+                            </div>
+                            <div class="edit-field">
+                                <label>Pop. Estimada</label>
+                                <span id="edit-estimated-pop" class="highlight">—</span>
+                            </div>
+                            <div class="edit-actions">
+                                <button class="btn-apply-density" id="btn-apply-density">Aplicar</button>
+                                <button class="btn-revert-density hidden" id="btn-revert-density" title="Repor valores originais dos censos">Reverter</button>
+                                <button class="btn-cancel-edit" id="btn-cancel-edit">Cancelar</button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -60,12 +173,56 @@
                 <button class="btn-export" id="btn-export">Exportar CSV</button>
                 <button class="btn-import" id="btn-import">Importar CSV</button>
                 <input type="file" id="file-input" accept=".csv" style="display: none;">
+                <div class="map-controls-divider"></div>
+                <button class="btn-save-project" id="btn-save-project">Guardar Projeto</button>
+                <button class="btn-load-project" id="btn-load-project">Carregar Projeto</button>
+                <input type="file" id="project-file-input" accept=".json" style="display: none;">
             </div>
         </main>
     </div>
-    
+
+    <!-- Modal for new urbanization -->
+    <div class="modal-overlay hidden" id="urbanization-modal">
+        <div class="modal">
+            <h2>Nova Urbanização</h2>
+            <div class="modal-body">
+                <div class="modal-field">
+                    <label for="urb-name">Nome</label>
+                    <input type="text" id="urb-name" placeholder="Ex: Urbanização da Quinta">
+                </div>
+                <div class="modal-field">
+                    <label for="urb-density-type">Tipo de densidade</label>
+                    <select id="urb-density-type"></select>
+                </div>
+                <div class="modal-field">
+                    <label for="urb-floors">Pisos (1-12): <span id="urb-floors-value">3</span></label>
+                    <input type="range" id="urb-floors" min="1" max="12" value="3">
+                </div>
+                <div class="modal-field">
+                    <label for="urb-coverage">Cobertura do solo: <span id="urb-coverage-value">40%</span></label>
+                    <input type="range" id="urb-coverage" min="5" max="80" value="40">
+                </div>
+                <div class="modal-field">
+                    <label>
+                        <input type="checkbox" id="urb-diffuse" checked>
+                        Difundir densidade nos arredores
+                    </label>
+                </div>
+                <div class="modal-estimate">
+                    <span>Pop. Estimada:</span>
+                    <span id="urb-estimated-pop" class="highlight">—</span>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn-apply-density" id="btn-create-urbanization">Criar</button>
+                <button class="btn-cancel-edit" id="btn-cancel-urbanization">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+    <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

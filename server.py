@@ -85,6 +85,22 @@ def get_metadata():
         return jsonify(METADATA)
     return jsonify({"error": "Metadados não disponíveis"})
 
+@app.route('/api/census-geojson')
+def get_census_geojson():
+    """Serve census data as GeoJSON for the scenario layer"""
+    global CENSUS_DATA, POP_COLUMN
+    if CENSUS_DATA is None:
+        load_census_data()
+    if CENSUS_DATA is None:
+        return jsonify({"error": "Dados não carregados"}), 500
+
+    # Ensure WGS84
+    gdf = CENSUS_DATA.to_crs("EPSG:4326") if CENSUS_DATA.crs != "EPSG:4326" else CENSUS_DATA
+    return app.response_class(
+        gdf.to_json(),
+        mimetype='application/json'
+    )
+
 @app.route('/api/isochrones', methods=['POST'])
 def get_isochrones():
     """Calcula isócronas reais usando OpenRouteService"""
@@ -199,6 +215,8 @@ def calculate_population():
     
     data = request.json
     points = data.get('points', [])  # [{lat, lng, id, isochrones?}]
+    density_overrides = data.get('density_overrides', {})  # { bgriId: { densityType, populationOverride } }
+    new_urbanization_features = data.get('new_urbanization_features', [])  # GeoJSON Feature list
     
     if not points:
         return jsonify({
@@ -301,6 +319,17 @@ def calculate_population():
     
     # Inicializar população para cada ponto
     point_populations = {p['id']: {'5min': 0, '10min': 0} for p in point_info}
+
+    # Helper: get population for a census row (respecting density overrides)
+    def get_pop_for_row(row):
+        bgri_id = None
+        for col in ['BGRI2021', 'SUBSECCAO', 'OBJECTID']:
+            if col in row.index:
+                bgri_id = str(row[col])
+                break
+        if bgri_id and bgri_id in density_overrides:
+            return density_overrides[bgri_id].get('populationOverride', row[POP_COLUMN])
+        return row[POP_COLUMN]
     
     if POP_COLUMN and POP_COLUMN in CENSUS_DATA.columns:
         # Criar união de todas as isócronas para encontrar todas as áreas de censo afetadas
@@ -339,7 +368,7 @@ def calculate_population():
                 point_data = intersecting_points[0]['point_data']
                 intersection = intersecting_points[0]['intersection']
                 area_ratio = intersection.area / row.geometry.area if row.geometry.area > 0 else 1.0
-                pop_value = row[POP_COLUMN] * area_ratio
+                pop_value = get_pop_for_row(row) * area_ratio
                 point_populations[point_data['id']]['5min'] += pop_value
             else:
                 # Há sobreposição - dividir a área de censo entre os pontos mais próximos
@@ -370,7 +399,7 @@ def calculate_population():
                     # Atribuir população da parte única
                     if not unique_intersection.is_empty and unique_intersection.area > 0:
                         area_ratio = unique_intersection.area / row.geometry.area if row.geometry.area > 0 else 1.0
-                        pop_value = row[POP_COLUMN] * area_ratio
+                        pop_value = get_pop_for_row(row) * area_ratio
                         point_populations[point_id]['5min'] += pop_value
         
         # Processar área de 10 minutos (apenas a parte que não está em 5 min)
@@ -402,7 +431,7 @@ def calculate_population():
                 point_data = intersecting_points[0]['point_data']
                 intersection = intersecting_points[0]['intersection']
                 area_ratio = intersection.area / row.geometry.area if row.geometry.area > 0 else 1.0
-                pop_value = row[POP_COLUMN] * area_ratio
+                pop_value = get_pop_for_row(row) * area_ratio
                 point_populations[point_data['id']]['10min'] += pop_value
             else:
                 # Há sobreposição - dividir a área de censo entre os pontos mais próximos
@@ -433,7 +462,7 @@ def calculate_population():
                     # Atribuir população da parte única
                     if not unique_intersection.is_empty and unique_intersection.area > 0:
                         area_ratio = unique_intersection.area / row.geometry.area if row.geometry.area > 0 else 1.0
-                        pop_value = row[POP_COLUMN] * area_ratio
+                        pop_value = get_pop_for_row(row) * area_ratio
                         point_populations[point_id]['10min'] += pop_value
         
         # Criar resultados finais
@@ -453,6 +482,36 @@ def calculate_population():
                 "population_10min": round(pop_10min),
                 "population_total": round(pop_5min + pop_10min)
             })
+
+    # Add new urbanization populations — attribute to the nearest station's 5-min catchment
+    for urb_feature in new_urbanization_features:
+        try:
+            urb_pop = urb_feature.get('properties', {}).get('estimated_pop', 0)
+            if urb_pop <= 0:
+                continue
+            urb_geom = shape(urb_feature['geometry'])
+            urb_centroid = urb_geom.centroid
+            # Find the nearest station
+            best_id = None
+            best_dist = float('inf')
+            for pi in point_info:
+                d = pi['point'].distance(
+                    gpd.GeoDataFrame([1], geometry=[Point(urb_centroid.x, urb_centroid.y)], crs="EPSG:4326")
+                        .to_crs(CENSUS_DATA.crs).geometry.iloc[0]
+                ) if CENSUS_DATA.crs != "EPSG:4326" else pi['point'].distance(Point(urb_centroid.x, urb_centroid.y))
+                if d < best_dist:
+                    best_dist = d
+                    best_id = pi['id']
+            if best_id is not None:
+                # Add to the nearest station result
+                for r in results:
+                    if r['id'] == best_id:
+                        r['population_5min'] += round(urb_pop)
+                        r['population_total'] += round(urb_pop)
+                        total_pop_5min += urb_pop
+                        break
+        except Exception as e:
+            print(f"Erro ao processar urbanização: {e}")
     
     return jsonify({
         "total_population_5min": round(total_pop_5min),
@@ -475,7 +534,7 @@ def export_points():
     writer = csv.writer(output)
     
     # Cabeçalho
-    writer.writerow(['id', 'lat', 'lng', 'population_5min', 'population_10min', 'population_total'])
+    writer.writerow(['id', 'lat', 'lng', 'group_id', 'group_name', 'population_5min', 'population_10min', 'population_total'])
     
     # Dados
     for point in points:
@@ -483,6 +542,8 @@ def export_points():
             point.get('id', ''),
             point.get('lat', ''),
             point.get('lng', ''),
+            point.get('group_id', ''),
+            point.get('group_name', ''),
             point.get('population_5min', 0),
             point.get('population_10min', 0),
             point.get('population_total', 0)
@@ -530,7 +591,8 @@ def import_points():
                 point = {
                     'id': point_id,
                     'lat': float(row.get('lat', 0)),
-                    'lng': float(row.get('lng', 0))
+                    'lng': float(row.get('lng', 0)),
+                    'group_name': row.get('group_name', '').strip() or None
                 }
                 points.append(point)
             except (ValueError, KeyError) as e:

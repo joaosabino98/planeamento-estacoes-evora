@@ -1,162 +1,357 @@
+// ============================================================
+// Planeamento de Estações v2.0 — app.js
+// ============================================================
+
 // Coordenadas de Évora (centro da cidade)
 const EVORA_CENTER = [38.5667, -7.9075];
 const EVORA_ZOOM = 13;
 
-// Velocidade a pé: ~5 km/h = ~83 m/min
-// Raio em metros
-const RADIUS_5MIN = 417;  // ~5 minutos a pé
-const RADIUS_10MIN = 833; // ~10 minutos a pé
+// ==================== Color Palette ====================
+const GROUP_COLORS = [
+    '#667eea', // indigo (default)
+    '#e53e3e', // red
+    '#38a169', // green
+    '#d69e2e', // yellow
+    '#3182ce', // blue
+    '#9f7aea', // purple
+    '#ed8936', // orange
+    '#38b2ac', // teal
+    '#e91e9b', // pink
+    '#2d3748', // dark
+];
 
-// Estado da aplicação
+// ==================== Density Types ====================
+const DENSITY_TYPES = [
+    { id: 0, label: 'Área desocupada',               residents_ha: 0,   color: '#e2e8f0' },
+    { id: 1, label: 'Zona industrial / serviços',    residents_ha: 5,   color: '#a0aec0' },
+    { id: 2, label: 'Vivenda unifamiliar',            residents_ha: 30,  color: '#c6f6d5' },
+    { id: 3, label: 'Moradia geminada (2 pisos)',     residents_ha: 70,  color: '#9ae6b4' },
+    { id: 4, label: 'Hab. coletiva baixa (3-4 pisos)',residents_ha: 150, color: '#f6e05e' },
+    { id: 5, label: 'Hab. coletiva média (4-6 pisos)',residents_ha: 250, color: '#ed8936' },
+    { id: 6, label: 'Uso misto (comércio + hab.)',    residents_ha: 200, color: '#fc8181' },
+    { id: 7, label: 'Alta densidade (6+ pisos)',      residents_ha: 400, color: '#e53e3e' },
+];
+
+// ==================== Application State ====================
 let map;
+
+// -- Stations & Groups --
+let groups = [];
+let activeGroupId = null;
 let stations = [];
 let stationMarkers = [];
 let isochroneLayers = [];
-let stationIsochroneLayers = {}; // Mapear station.id -> array de camadas
+let stationIsochroneLayers = {};
 let isUpdating = false;
 
-// Sistema de undo/redo
-let historyStack = []; // Histórico de estados
-let historyIndex = -1; // Índice atual no histórico
-const MAX_HISTORY = 50; // Limite de histórico
-let isSavingState = false; // Flag para evitar salvar estado duplicado
+// -- Active tab --
+let activeTab = 'stations'; // 'stations' | 'scenario'
 
-// Inicializar mapa
+// -- Scenario mode --
+let censusGeoJSON = null;        // raw GeoJSON data
+let censusLayer = null;          // Leaflet GeoJSON layer
+let densityOverrides = {};       // { bgriId: { densityType: <int>, populationOverride: <number> } }
+let newUrbanizations = [];       // [{ id, name, geometry, densityType, floors, coverage, diffuse, estimatedPop, layers[] }]
+let urbanizationLayers = [];     // all Leaflet layers for urbanizations
+let selectedCensusFeature = null;
+let drawControl = null;
+let drawnItems = null;
+let isDrawingUrbanization = false;
+let pendingUrbanizationGeometry = null;
+
+// -- Undo/Redo --
+let historyStack = [];
+let historyIndex = -1;
+const MAX_HISTORY = 50;
+let isSavingState = false;
+
+// ============================================================
+//                       INITIALIZATION
+// ============================================================
 function initMap() {
     const mapElement = document.getElementById('map');
-    if (!mapElement) {
-        console.error('Elemento #map não encontrado!');
-        return;
-    }
-    
-    console.log('Criando mapa Leaflet...');
+    if (!mapElement) { console.error('Elemento #map não encontrado!'); return; }
+
     map = L.map('map').setView(EVORA_CENTER, EVORA_ZOOM);
-    
-    // Adicionar tile layer (OpenStreetMap)
+
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors',
         maxZoom: 19
     }).addTo(map);
-    
-    console.log('Tile layer adicionado');
-    
-    // Event listener para adicionar estação ao clicar no mapa
+
+    // Leaflet.draw setup (for urbanization polygons)
+    drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+
+    // Map click — add station (only in stations tab, not drawing)
     map.on('click', function(e) {
-        if (!isUpdating) {
+        if (activeTab === 'stations' && !isUpdating) {
             addStation(e.latlng.lat, e.latlng.lng);
         }
+        // scenario clicks are handled by the censusLayer click handler
     });
-    
-    // Botão limpar
+
+    // Draw events
+    map.on(L.Draw.Event.CREATED, function(event) {
+        const layer = event.layer;
+        if (isDrawingUrbanization) {
+            pendingUrbanizationGeometry = layer.toGeoJSON().geometry;
+            drawnItems.addLayer(layer);
+            showUrbanizationModal();
+        }
+    });
+
+    // Initialize with one default group
+    createGroup('Grupo 1');
+
+    // Wire up control buttons
     document.getElementById('btn-clear').addEventListener('click', clearAllStations);
-    
-    // Botão exportar
     document.getElementById('btn-export').addEventListener('click', exportToCSV);
-    
-    // Botão importar
-    document.getElementById('btn-import').addEventListener('click', () => {
-        document.getElementById('file-input').click();
-    });
-    
-    // Input de arquivo
+    document.getElementById('btn-import').addEventListener('click', () => document.getElementById('file-input').click());
     document.getElementById('file-input').addEventListener('change', importFromCSV);
-    
-    // Atalhos de teclado para undo/redo
-    document.addEventListener('keydown', function(e) {
-        // Ctrl+Z ou Cmd+Z para undo
-        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
-            e.preventDefault();
-            undo();
-        }
-        // Ctrl+Shift+Z ou Cmd+Shift+Z para redo
-        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && e.shiftKey) {
-            e.preventDefault();
-            redo();
-        }
-        // Ctrl+Y ou Cmd+Y para redo (alternativa)
-        if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
-            e.preventDefault();
-            redo();
-        }
+    document.getElementById('btn-save-project').addEventListener('click', saveProject);
+    document.getElementById('btn-load-project').addEventListener('click', () => document.getElementById('project-file-input').click());
+    document.getElementById('project-file-input').addEventListener('change', loadProject);
+    document.getElementById('btn-add-group').addEventListener('click', () => {
+        const name = `Grupo ${groups.length + 1}`;
+        createGroup(name);
+        renderGroups();
     });
-    
-    // Salvar estado inicial
+
+    // Tabs
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
+
+    // Scenario buttons
+    document.getElementById('btn-recalc').addEventListener('click', recalculateCatchment);
+    document.getElementById('btn-reset-scenario').addEventListener('click', resetScenario);
+    document.getElementById('btn-draw-urbanization').addEventListener('click', startDrawUrbanization);
+    document.getElementById('btn-apply-density').addEventListener('click', applyDensityEdit);
+    document.getElementById('btn-revert-density').addEventListener('click', revertDensityEdit);
+    document.getElementById('btn-cancel-edit').addEventListener('click', cancelEdit);
+    document.getElementById('edit-density-select').addEventListener('change', () => {
+        const hasValue = document.getElementById('edit-density-select').value !== '';
+        document.getElementById('edit-coverage-field').classList.toggle('hidden', !hasValue);
+        updateEstimatedPop();
+    });
+    document.getElementById('edit-coverage').addEventListener('input', () => {
+        document.getElementById('edit-coverage-value').textContent =
+            document.getElementById('edit-coverage').value + '%';
+        updateEstimatedPop();
+    });
+    document.getElementById('edit-density-select').addEventListener('change', updateEstimatedPop);
+
+    // Urbanization modal
+    document.getElementById('btn-create-urbanization').addEventListener('click', confirmUrbanization);
+    document.getElementById('btn-cancel-urbanization').addEventListener('click', cancelUrbanization);
+    document.getElementById('urb-floors').addEventListener('input', updateUrbanizationEstimate);
+    document.getElementById('urb-coverage').addEventListener('input', updateUrbanizationEstimate);
+    document.getElementById('urb-density-type').addEventListener('change', updateUrbanizationEstimate);
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', function(e) {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo(); }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); redo(); }
+    });
+
+    // Populate density selects
+    populateDensitySelects();
+    renderDensityLegend();
+    renderGroups();
     saveState();
 }
 
-// Salvar estado atual no histórico
-function saveState(skipDuplicateCheck = false) {
-    // Evitar salvar estado duplicado (a menos que explicitamente solicitado)
-    if (!skipDuplicateCheck && isSavingState) {
+// ============================================================
+//                           TABS
+// ============================================================
+function switchTab(tab) {
+    activeTab = tab;
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === `tab-${tab}`));
+
+    if (tab === 'scenario') {
+        loadCensusLayer();
+    } else {
+        removeCensusLayer();
+    }
+}
+
+// ============================================================
+//                        GROUPS
+// ============================================================
+function createGroup(name, color) {
+    const id = Date.now() + Math.random();
+    const usedColors = groups.map(g => g.color);
+    if (!color) {
+        color = GROUP_COLORS.find(c => !usedColors.includes(c)) || GROUP_COLORS[groups.length % GROUP_COLORS.length];
+    }
+    const group = { id, name, color, visible: true };
+    groups.push(group);
+    activeGroupId = id;
+    renderGroups();
+    return group;
+}
+
+function deleteGroup(groupId) {
+    // Move stations of this group to the first remaining group, or delete them
+    const remaining = groups.filter(g => g.id !== groupId);
+    if (remaining.length === 0) {
+        alert('Deve existir pelo menos um grupo.');
         return;
     }
-    
+    const targetGroup = remaining[0];
+    stations.forEach(s => {
+        if (s.groupId === groupId) s.groupId = targetGroup.id;
+    });
+    groups = remaining;
+    if (activeGroupId === groupId) activeGroupId = targetGroup.id;
+    renderGroups();
+    updateMap();
+    updateSidebar();
+}
+
+function setActiveGroup(groupId) {
+    activeGroupId = groupId;
+    renderGroups();
+}
+
+function toggleGroupVisibility(groupId) {
+    const group = groups.find(g => g.id === groupId);
+    if (!group) return;
+    group.visible = !group.visible;
+    renderGroups();
+    updateMap();
+}
+
+function getGroupForStation(station) {
+    return groups.find(g => g.id === station.groupId) || groups[0];
+}
+
+function renderGroups() {
+    const container = document.getElementById('groups-list');
+    if (groups.length === 0) {
+        container.innerHTML = '<p class="no-stations">Sem grupos</p>';
+        return;
+    }
+    container.innerHTML = groups.map(g => {
+        const count = stations.filter(s => s.groupId === g.id).length;
+        const isActive = g.id === activeGroupId;
+        return `
+            <div class="group-row ${isActive ? 'active' : ''}" data-group-id="${g.id}">
+                <div class="group-color-swatch" style="background:${g.color}" data-action="color" title="Mudar cor"></div>
+                <input class="group-name-input" value="${escapeHtml(g.name)}" data-action="rename" />
+                <span class="group-badge">${count}</span>
+                <button class="group-btn btn-visibility" data-action="visibility" title="${g.visible ? 'Ocultar' : 'Mostrar'}">${g.visible ? '👁️' : '👁️‍🗨️'}</button>
+                <button class="group-btn btn-delete-group" data-action="delete" title="Apagar grupo">×</button>
+            </div>
+        `;
+    }).join('');
+
+    // Event delegation
+    container.querySelectorAll('.group-row').forEach(row => {
+        const gid = parseFloat(row.dataset.groupId);
+
+        row.addEventListener('click', (e) => {
+            const action = e.target.dataset.action || e.target.closest('[data-action]')?.dataset.action;
+            if (!action) { setActiveGroup(gid); return; }
+            if (action === 'color') { showColorPicker(e.target, gid); }
+            else if (action === 'visibility') { toggleGroupVisibility(gid); }
+            else if (action === 'delete') { deleteGroup(gid); }
+            else if (action === 'rename') { /* handled by input change */ }
+            else { setActiveGroup(gid); }
+        });
+
+        const nameInput = row.querySelector('.group-name-input');
+        nameInput.addEventListener('change', () => {
+            const group = groups.find(g => g.id === gid);
+            if (group) group.name = nameInput.value;
+            updateSidebar();
+        });
+        nameInput.addEventListener('click', (e) => e.stopPropagation());
+    });
+}
+
+// Color picker popup
+let activeColorPicker = null;
+function showColorPicker(swatchEl, groupId) {
+    closeColorPicker();
+    const rect = swatchEl.getBoundingClientRect();
+    const popup = document.createElement('div');
+    popup.className = 'color-picker-popup';
+    popup.style.left = rect.left + 'px';
+    popup.style.top = (rect.bottom + 4) + 'px';
+    GROUP_COLORS.forEach(c => {
+        const opt = document.createElement('div');
+        opt.className = 'color-picker-option';
+        opt.style.background = c;
+        opt.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const group = groups.find(g => g.id === groupId);
+            if (group) {
+                group.color = c;
+                renderGroups();
+                updateMap();
+                updateSidebar();
+            }
+            closeColorPicker();
+        });
+        popup.appendChild(opt);
+    });
+    document.body.appendChild(popup);
+    activeColorPicker = popup;
+    setTimeout(() => {
+        document.addEventListener('click', closeColorPicker, { once: true });
+    }, 10);
+}
+
+function closeColorPicker() {
+    if (activeColorPicker) {
+        activeColorPicker.remove();
+        activeColorPicker = null;
+    }
+}
+
+// ============================================================
+//                     UNDO / REDO
+// ============================================================
+function saveState(skipDuplicateCheck = false) {
+    if (!skipDuplicateCheck && isSavingState) return;
     isSavingState = true;
-    
-    // Criar deep copy do estado atual (apenas dados essenciais: id, lat, lng)
-    // Não salvar isócronas, população, etc. - apenas posições
-    const state = stations.map(s => ({
-        id: s.id,
-        lat: s.lat,
-        lng: s.lng
-    }));
-    
-    // Verificar se o estado é diferente do último estado salvo
+
+    const state = stations.map(s => ({ id: s.id, lat: s.lat, lng: s.lng, groupId: s.groupId }));
+
     if (historyStack.length > 0 && historyIndex >= 0 && historyIndex < historyStack.length) {
-        const lastState = historyStack[historyIndex];
-        // Comparar se é realmente diferente (apenas coordenadas e IDs)
-        // Ordenar por ID para comparação consistente
-        const normalizeState = (s) => {
-            const sorted = [...s].sort((a, b) => String(a.id).localeCompare(String(b.id)));
-            return JSON.stringify(sorted);
-        };
-        if (normalizeState(lastState) === normalizeState(state)) {
+        const normalizeState = (s) => JSON.stringify([...s].sort((a, b) => String(a.id).localeCompare(String(b.id))));
+        if (normalizeState(historyStack[historyIndex]) === normalizeState(state)) {
             isSavingState = false;
-            return; // Estado idêntico, não salvar
+            return;
         }
     }
-    
-    // Remover estados futuros se estamos no meio do histórico
+
     if (historyIndex < historyStack.length - 1) {
         historyStack = historyStack.slice(0, historyIndex + 1);
     }
-    
-    // Adicionar novo estado
     historyStack.push(state);
-    
-    // Limitar tamanho do histórico
-    if (historyStack.length > MAX_HISTORY) {
-        historyStack.shift();
-    }
-    
-    // historyIndex sempre aponta para o último estado (estado atual)
+    if (historyStack.length > MAX_HISTORY) historyStack.shift();
     historyIndex = historyStack.length - 1;
-    
     isSavingState = false;
 }
 
-// Desfazer última ação
 function undo() {
-    // historyIndex aponta para o estado atual (último estado salvo)
-    // Para desfazer, precisamos ir para o estado anterior (historyIndex - 1)
-    if (historyIndex >= 0 && historyStack.length > 0) {
-        if (historyIndex > 0) {
-            historyIndex--;
-            restoreState(historyStack[historyIndex], true);
-        } else {
-            // Se estamos no primeiro estado (índice 0), ir para estado vazio
-            historyIndex = -1;
-            stations = [];
-            isSavingState = true;
-            updateMap();
-            updateSidebar();
-            calculatePopulation();
-            isSavingState = false;
-        }
+    if (historyIndex > 0) {
+        historyIndex--;
+        restoreState(historyStack[historyIndex], true);
+    } else if (historyIndex === 0) {
+        historyIndex = -1;
+        stations = [];
+        isSavingState = true;
+        updateMap(); updateSidebar(); calculatePopulation();
+        isSavingState = false;
     }
 }
 
-// Refazer ação desfeita
 function redo() {
     if (historyIndex < historyStack.length - 1) {
         historyIndex++;
@@ -164,833 +359,1011 @@ function redo() {
     }
 }
 
-// Restaurar estado do histórico
 function restoreState(state, skipSave = false) {
-    // Preservar cache de isócronas para estações que não mudaram
     const cachePreservation = {};
-    stations.forEach(oldStation => {
-        const matchingState = state.find(s => String(s.id) === String(oldStation.id));
-        if (matchingState && 
-            oldStation.isochrones && 
-            Array.isArray(oldStation.isochrones) &&
-            oldStation.isochrones.length >= 2 &&
-            !oldStation.isochroneError &&
-            oldStation.cachedLat === matchingState.lat &&
-            oldStation.cachedLng === matchingState.lng) {
-            // Preservar cache se coordenadas não mudaram
-            cachePreservation[String(oldStation.id)] = {
-                isochrones: oldStation.isochrones,
-                cachedLat: oldStation.cachedLat,
-                cachedLng: oldStation.cachedLng,
-                isochroneError: oldStation.isochroneError
+    stations.forEach(old => {
+        const match = state.find(s => String(s.id) === String(old.id));
+        if (match && old.isochrones && Array.isArray(old.isochrones) && old.isochrones.length >= 2 &&
+            !old.isochroneError && old.cachedLat === match.lat && old.cachedLng === match.lng) {
+            cachePreservation[String(old.id)] = {
+                isochrones: old.isochrones, cachedLat: old.cachedLat, cachedLng: old.cachedLng, isochroneError: old.isochroneError
             };
         }
     });
-    
-    // Criar deep copy do estado e restaurar apenas dados essenciais
-    // As estações no histórico só têm id, lat, lng
+
     stations = state.map(s => {
         const cached = cachePreservation[String(s.id)];
-        return {
-            id: s.id,
-            lat: s.lat,
-            lng: s.lng,
-            // Preservar cache se disponível
-            ...(cached ? cached : {})
-        };
+        return { id: s.id, lat: s.lat, lng: s.lng, groupId: s.groupId, ...(cached || {}) };
     });
-    
-    // Atualizar interface (sem salvar estado durante restauração)
-    isSavingState = true; // Prevenir saveState durante restore
-    updateMap();
-    updateSidebar();
-    calculatePopulation();
+
+    isSavingState = true;
+    updateMap(); updateSidebar(); calculatePopulation();
     isSavingState = false;
-    
-    // Se skipSave for true, não salvar estado após restaurar (para undo/redo)
-    // Caso contrário, salvar o estado restaurado (para importação, etc.)
-    if (!skipSave) {
-        // Ajustar historyIndex para apontar para o estado atual
-        // Não adicionar novo estado, apenas ajustar o índice
-        const currentState = stations.map(s => ({ id: s.id, lat: s.lat, lng: s.lng }));
-        const stateIndex = historyStack.findIndex(s => JSON.stringify(s) === JSON.stringify(currentState));
-        if (stateIndex !== -1) {
-            historyIndex = stateIndex;
-        }
-    }
 }
 
-// Adicionar estação
+// ============================================================
+//                      STATIONS
+// ============================================================
 function addStation(lat, lng) {
-    saveState(); // Salvar estado antes de adicionar
-    
-    const stationId = Date.now();
-    const station = {
-        id: stationId,
-        lat: lat,
-        lng: lng
-    };
-    
+    saveState();
+    const gid = activeGroupId || (groups[0] && groups[0].id);
+    if (!gid) { createGroup('Grupo 1'); }
+    const station = { id: Date.now(), lat, lng, groupId: activeGroupId || groups[0].id };
     stations.push(station);
-    updateMap();
-    updateSidebar();
-    // calculatePopulation será chamado quando as isócronas estiverem prontas
+    updateMap(); updateSidebar(); renderGroups();
 }
 
-// Remover estação
 function removeStation(stationId) {
-    saveState(); // Salvar estado antes de remover
-    
+    saveState();
     stations = stations.filter(s => s.id !== stationId);
-    updateMap();
-    updateSidebar();
-    calculatePopulation();
+    updateMap(); updateSidebar(); calculatePopulation(); renderGroups();
 }
 
-// Limpar todas as estações
 function clearAllStations() {
     if (confirm('Tem a certeza que deseja remover todas as estações?')) {
-        saveState(); // Salvar estado antes de limpar
-        
+        saveState();
         stations = [];
-        updateMap();
-        updateSidebar();
-        calculatePopulation();
+        updateMap(); updateSidebar(); calculatePopulation(); renderGroups();
     }
 }
 
-// Verificar se uma estação tem isócronas válidas em cache
+// ============================================================
+//                   MAP UPDATE & MARKERS
+// ============================================================
 function hasValidCache(station) {
-    return station.isochrones && 
-           Array.isArray(station.isochrones) && 
-           station.isochrones.length >= 2 &&
-           !station.isochroneError &&
-           station.cachedLat === station.lat &&
-           station.cachedLng === station.lng;
+    return station.isochrones && Array.isArray(station.isochrones) && station.isochrones.length >= 2 &&
+           !station.isochroneError && station.cachedLat === station.lat && station.cachedLng === station.lng;
 }
 
-// Verificar se as camadas de uma estação estão desenhadas no mapa
 function areLayersOnMap(stationId) {
-    const existingLayers = stationIsochroneLayers[stationId] || [];
-    const layersOnMap = existingLayers.filter(layer => {
-        try {
-            return map.hasLayer(layer);
-        } catch (e) {
-            return false;
-        }
-    });
-    return layersOnMap.length >= 2;
+    const layers = stationIsochroneLayers[stationId] || [];
+    return layers.filter(l => { try { return map.hasLayer(l); } catch { return false; } }).length >= 2;
 }
 
-// Atualizar mapa - apenas recria marcadores, preserva isócronas com cache válido
 function updateMap() {
-    // Remover apenas marcadores antigos (não tocar nas isócronas)
-    stationMarkers.forEach(marker => {
-        try {
-            if (map.hasLayer(marker)) {
-                map.removeLayer(marker);
-            }
-        } catch (e) {
-            console.warn('Erro ao remover marker:', e);
-        }
-    });
-    
-    // Remover camadas de estações que não existem mais
-    const existingStationIds = new Set(stations.map(s => String(s.id)));
-    Object.keys(stationIsochroneLayers).forEach(stationId => {
-        if (!existingStationIds.has(String(stationId))) {
-            stationIsochroneLayers[stationId].forEach(layer => {
-                try {
-                    if (map.hasLayer(layer)) {
-                        map.removeLayer(layer);
-                    }
-                } catch (e) {
-                    console.warn('Erro ao remover layer:', e);
-                }
-                const index = isochroneLayers.indexOf(layer);
-                if (index > -1) {
-                    isochroneLayers.splice(index, 1);
-                }
+    // Remove old markers
+    stationMarkers.forEach(m => { try { if (map.hasLayer(m)) map.removeLayer(m); } catch {} });
+
+    // Remove layers for deleted stations
+    const existingIds = new Set(stations.map(s => String(s.id)));
+    Object.keys(stationIsochroneLayers).forEach(sid => {
+        if (!existingIds.has(String(sid))) {
+            stationIsochroneLayers[sid].forEach(l => {
+                try { if (map.hasLayer(l)) map.removeLayer(l); } catch {}
+                const idx = isochroneLayers.indexOf(l);
+                if (idx > -1) isochroneLayers.splice(idx, 1);
             });
-            delete stationIsochroneLayers[stationId];
+            delete stationIsochroneLayers[sid];
         }
     });
-    
-    // Limpar marcadores de carregamento
-    stations.forEach(station => {
-        if (station.loadingMarker) {
-            try {
-                if (map.hasLayer(station.loadingMarker)) {
-                    map.removeLayer(station.loadingMarker);
-                }
-            } catch (e) {
-                console.warn('Erro ao remover loading marker:', e);
-            }
-            station.loadingMarker = null;
-        }
-        station.creatingIsochrones = false;
+
+    // Clean loading markers
+    stations.forEach(s => {
+        if (s.loadingMarker) { try { if (map.hasLayer(s.loadingMarker)) map.removeLayer(s.loadingMarker); } catch {} s.loadingMarker = null; }
+        s.creatingIsochrones = false;
     });
-    
+
     stationMarkers = [];
-    
-    // Adicionar novos marcadores
-    stations.forEach((station) => {
-        const marker = createStationMarker(station);
+
+    stations.forEach(station => {
+        const group = getGroupForStation(station);
+
+        // Visibility check
+        if (!group.visible) {
+            // Hide isochrone layers if present
+            (stationIsochroneLayers[station.id] || []).forEach(l => {
+                try { if (map.hasLayer(l)) map.removeLayer(l); } catch {}
+            });
+            return;
+        }
+
+        const marker = createStationMarker(station, group.color);
         stationMarkers.push(marker);
-        
-        // Inicializar isócronas apenas se necessário (não tem cache válido ou não está desenhada)
-        if (!hasValidCache(station) || !areLayersOnMap(station.id)) {
+
+        // Ensure isochrone layers are visible/colored correctly
+        if (hasValidCache(station)) {
+            if (!areLayersOnMap(station.id)) {
+                drawCachedIsochrones(station, group.color);
+            } else {
+                // Re-style existing layers
+                (stationIsochroneLayers[station.id] || []).forEach((l, i) => {
+                    if (l.setStyle) {
+                        const col = group.color;
+                        l.setStyle({ color: col, fillColor: col, fillOpacity: i === 0 ? 0.2 : 0.12, weight: 2, opacity: i === 0 ? 0.8 : 0.6 });
+                    }
+                });
+            }
+        } else {
             initializeStationIsochrones(station);
         }
     });
-    
-    // Não calcular população aqui - será calculado quando as isócronas estiverem prontas
 }
 
-// Criar marcador para uma estação
-function createStationMarker(station) {
+function createStationMarker(station, color) {
     const marker = L.marker([station.lat, station.lng], {
         draggable: true,
         icon: L.divIcon({
             className: 'station-marker',
-            html: `<div style="
-                background: #667eea;
-                width: 24px;
-                height: 24px;
-                border-radius: 50%;
-                border: 3px solid white;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-            "></div>`,
+            html: `<div style="background:${color};width:24px;height:24px;border-radius:50%;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.3);"></div>`,
             iconSize: [24, 24],
             iconAnchor: [12, 12]
         })
     }).addTo(map);
-    
+
     let dragStartCoords = null;
-    
-    marker.on('dragstart', function() {
-        isUpdating = true;
-        dragStartCoords = { lat: station.lat, lng: station.lng };
-        // Não salvar estado aqui - vamos salvar apenas no dragend se realmente mudou
+    marker.on('dragstart', () => { isUpdating = true; dragStartCoords = { lat: station.lat, lng: station.lng }; });
+    marker.on('drag', (e) => {
+        station.lat = e.target.getLatLng().lat;
+        station.lng = e.target.getLatLng().lng;
+        const idx = stations.findIndex(s => s.id === station.id);
+        if (idx !== -1) { stations[idx].lat = station.lat; stations[idx].lng = station.lng; }
     });
-    
-    marker.on('drag', function(e) {
-        const newLat = e.target.getLatLng().lat;
-        const newLng = e.target.getLatLng().lng;
-        station.lat = newLat;
-        station.lng = newLng;
-        // Atualizar no array também
-        const stationIndex = stations.findIndex(s => s.id === station.id);
-        if (stationIndex !== -1) {
-            stations[stationIndex].lat = newLat;
-            stations[stationIndex].lng = newLng;
-        }
-    });
-    
-    marker.on('dragend', async function(e) {
+    marker.on('dragend', async (e) => {
         isUpdating = false;
-        const newLat = e.target.getLatLng().lat;
-        const newLng = e.target.getLatLng().lng;
-        
-        // Encontrar a estação atual no array (pode ter mudado)
-        const stationIndex = stations.findIndex(s => s.id === station.id);
-        if (stationIndex === -1) {
-            console.error('Estação não encontrada após dragend');
-            return;
-        }
-        
-        const currentStation = stations[stationIndex];
-        
-        const coordsChanged = dragStartCoords && 
-                              (Math.abs(dragStartCoords.lat - newLat) > 0.0001 || 
-                               Math.abs(dragStartCoords.lng - newLng) > 0.0001);
-        
-        if (!coordsChanged) {
-            // Restaurar coordenadas
-            currentStation.lat = dragStartCoords.lat;
-            currentStation.lng = dragStartCoords.lng;
-            dragStartCoords = null;
-            calculatePopulation();
-            return;
-        }
-        
-        // Atualizar coordenadas
-        currentStation.lat = newLat;
-        currentStation.lng = newLng;
-        dragStartCoords = null;
-        
-        // Salvar estado ANTES de limpar cache (para undo funcionar corretamente)
+        const nl = e.target.getLatLng();
+        const idx = stations.findIndex(s => s.id === station.id);
+        if (idx === -1) return;
+        const cur = stations[idx];
+        const moved = dragStartCoords && (Math.abs(dragStartCoords.lat - nl.lat) > 0.0001 || Math.abs(dragStartCoords.lng - nl.lng) > 0.0001);
+        if (!moved) { cur.lat = dragStartCoords.lat; cur.lng = dragStartCoords.lng; dragStartCoords = null; calculatePopulation(); return; }
+        cur.lat = nl.lat; cur.lng = nl.lng; dragStartCoords = null;
         saveState();
-        
-        // Limpar cache e recriar isócronas
-        removeStationIsochrones(currentStation.id);
-        currentStation.isochrones = null;
-        currentStation.cachedLat = null;
-        currentStation.cachedLng = null;
-        currentStation.isochroneError = null;
-        currentStation.creatingIsochrones = false;
-        
-        // Recriar isócronas (forçar) e calcular população após terminar
-        await createIsochrones(currentStation, true);
-        // Calcular população após recriar isócronas
+        removeStationIsochrones(cur.id);
+        cur.isochrones = null; cur.cachedLat = null; cur.cachedLng = null; cur.isochroneError = null; cur.creatingIsochrones = false;
+        await createIsochrones(cur, true);
         await calculatePopulation();
     });
-    
     return marker;
 }
 
-// Inicializar isócronas de uma estação (apenas se necessário)
+// ============================================================
+//                    ISOCHRONES
+// ============================================================
 function initializeStationIsochrones(station) {
-    // Verificar cache novamente antes de criar
-    if (hasValidCache(station) && areLayersOnMap(station.id)) {
-        return; // Já tem cache válido e desenhado
-    }
-    
-    // Criar isócronas (assíncrono)
-    createIsochrones(station).then(() => {
-        // Após criar isócronas, calcular população
-        calculatePopulation();
-    }).catch(error => {
-        console.error('Erro ao criar isócronas:', error);
-        // Mesmo em caso de erro, calcular população (pode ter outras estações válidas)
-        calculatePopulation();
-    });
+    if (hasValidCache(station) && areLayersOnMap(station.id)) return;
+    createIsochrones(station).then(() => calculatePopulation()).catch(() => calculatePopulation());
 }
 
-// Desenhar isócronas do cache no mapa
-function drawCachedIsochrones(station) {
-    if (!station.isochrones || !Array.isArray(station.isochrones) || station.isochrones.length < 2) {
-        return;
-    }
-    
-    if (!stationIsochroneLayers[station.id]) {
-        stationIsochroneLayers[station.id] = [];
-    }
-    
-    // Desenhar isócrona de 5 minutos
+function drawCachedIsochrones(station, color) {
+    if (!station.isochrones || station.isochrones.length < 2) return;
+    if (!stationIsochroneLayers[station.id]) stationIsochroneLayers[station.id] = [];
+
     if (station.isochrones[0]) {
-        const layer5min = L.geoJSON(station.isochrones[0], {
-            style: {
-                color: '#667eea',
-                fillColor: '#667eea',
-                fillOpacity: 0.2,
-                weight: 2,
-                opacity: 0.8
-            }
-        }).addTo(map);
-        isochroneLayers.push(layer5min);
-        stationIsochroneLayers[station.id].push(layer5min);
+        const l = L.geoJSON(station.isochrones[0], { style: { color, fillColor: color, fillOpacity: 0.2, weight: 2, opacity: 0.8 } }).addTo(map);
+        isochroneLayers.push(l); stationIsochroneLayers[station.id].push(l);
     }
-    
-    // Desenhar isócrona de 10 minutos
     if (station.isochrones[1]) {
-        const layer10min = L.geoJSON(station.isochrones[1], {
-            style: {
-                color: '#764ba2',
-                fillColor: '#764ba2',
-                fillOpacity: 0.15,
-                weight: 2,
-                opacity: 0.7
-            }
-        }).addTo(map);
-        isochroneLayers.push(layer10min);
-        stationIsochroneLayers[station.id].push(layer10min);
+        const l = L.geoJSON(station.isochrones[1], { style: { color, fillColor: color, fillOpacity: 0.12, weight: 2, opacity: 0.6 } }).addTo(map);
+        isochroneLayers.push(l); stationIsochroneLayers[station.id].push(l);
     }
 }
 
-// Criar isócronas reais para uma estação
 async function createIsochrones(station, forceRefresh = false) {
-    // Evitar criar isócronas múltiplas vezes simultaneamente para a mesma estação
-    if (station.creatingIsochrones) {
-        return;
-    }
-    
-    // Se não forçar refresh, verificar cache
+    if (station.creatingIsochrones) return;
+    const group = getGroupForStation(station);
+    const color = group.color;
+
     if (!forceRefresh && hasValidCache(station)) {
-        // Se já estão desenhadas, não fazer nada
-        if (areLayersOnMap(station.id)) {
-            return;
-        }
-        // Se não estão desenhadas, desenhar do cache
-        drawCachedIsochrones(station);
+        if (areLayersOnMap(station.id)) return;
+        drawCachedIsochrones(station, color);
         return;
     }
-    
-    // Remover isócronas antigas desta estação antes de criar novas
+
     removeStationIsochrones(station.id);
-    
     station.creatingIsochrones = true;
-    
+
     try {
-        // Mostrar indicador de carregamento
         const loadingMarker = L.marker([station.lat, station.lng], {
             icon: L.divIcon({
                 className: 'loading-marker',
-                html: '<div style="background: #ffa500; width: 20px; height: 20px; border-radius: 50%; border: 2px solid white; animation: pulse 1s infinite;"></div>',
-                iconSize: [20, 20],
-                iconAnchor: [10, 10]
+                html: '<div style="background:#ffa500;width:20px;height:20px;border-radius:50%;border:2px solid white;animation:pulse 1s infinite;"></div>',
+                iconSize: [20, 20], iconAnchor: [10, 10]
             })
         }).addTo(map);
-        
-        // Guardar referência do marcador de carregamento para poder removê-lo depois
         station.loadingMarker = loadingMarker;
-        
-        // Obter isócronas reais da API
-        const response = await fetch('http://localhost:5000/api/isochrones', {
+
+        const response = await fetch('/api/isochrones', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                lat: station.lat,
-                lng: station.lng,
-                ranges: [300, 600] // 5 min e 10 min em segundos (5 km/h = 1.39 m/s)
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ lat: station.lat, lng: station.lng, ranges: [300, 600] })
         });
-        
-        if (!response.ok) {
-            throw new Error('Erro ao obter isócronas');
-        }
-        
+
+        if (!response.ok) throw new Error('Erro ao obter isócronas');
         const data = await response.json();
-        
-        // Remover marcador de carregamento
-        if (station.loadingMarker && map.hasLayer(station.loadingMarker)) {
-            map.removeLayer(station.loadingMarker);
-        }
+
+        if (station.loadingMarker && map.hasLayer(station.loadingMarker)) map.removeLayer(station.loadingMarker);
         station.loadingMarker = null;
-        
-        // Inicializar array de camadas para esta estação
-        if (!stationIsochroneLayers[station.id]) {
-            stationIsochroneLayers[station.id] = [];
-        }
-        
-        // Desenhar isócrona de 5 minutos (área primária)
+
+        if (!stationIsochroneLayers[station.id]) stationIsochroneLayers[station.id] = [];
+
         if (data.isochrones && data.isochrones[0]) {
-            const layer5min = L.geoJSON(data.isochrones[0], {
-                style: {
-                    color: '#667eea',
-                    fillColor: '#667eea',
-                    fillOpacity: 0.2,
-                    weight: 2,
-                    opacity: 0.8
-                }
-            }).addTo(map);
-            isochroneLayers.push(layer5min);
-            stationIsochroneLayers[station.id].push(layer5min);
+            const l = L.geoJSON(data.isochrones[0], { style: { color, fillColor: color, fillOpacity: 0.2, weight: 2, opacity: 0.8 } }).addTo(map);
+            isochroneLayers.push(l); stationIsochroneLayers[station.id].push(l);
         }
-        
-        // Desenhar isócrona de 10 minutos (área secundária)
         if (data.isochrones && data.isochrones[1]) {
-            const layer10min = L.geoJSON(data.isochrones[1], {
-                style: {
-                    color: '#764ba2',
-                    fillColor: '#764ba2',
-                    fillOpacity: 0.15,
-                    weight: 2,
-                    opacity: 0.7
-                }
-            }).addTo(map);
-            isochroneLayers.push(layer10min);
-            stationIsochroneLayers[station.id].push(layer10min);
+            const l = L.geoJSON(data.isochrones[1], { style: { color, fillColor: color, fillOpacity: 0.12, weight: 2, opacity: 0.6 } }).addTo(map);
+            isochroneLayers.push(l); stationIsochroneLayers[station.id].push(l);
         }
-        
-        // Guardar geometrias das isócronas na estação para cálculo de população
-        // E também guardar as coordenadas para verificar cache no futuro
+
         station.isochrones = data.isochrones || [];
-        station.cachedLat = station.lat;
-        station.cachedLng = station.lng;
-        station.isochroneError = null; // Limpar erro anterior se houver
-        
-        // Atualizar também no array stations se necessário
-        const stationIndex = stations.findIndex(s => s.id === station.id);
-        if (stationIndex !== -1) {
-            stations[stationIndex].isochrones = station.isochrones;
-            stations[stationIndex].cachedLat = station.cachedLat;
-            stations[stationIndex].cachedLng = station.cachedLng;
-            stations[stationIndex].isochroneError = null;
-        }
-        
+        station.cachedLat = station.lat; station.cachedLng = station.lng; station.isochroneError = null;
+        const idx = stations.findIndex(s => s.id === station.id);
+        if (idx !== -1) { stations[idx].isochrones = station.isochrones; stations[idx].cachedLat = station.cachedLat; stations[idx].cachedLng = station.cachedLng; stations[idx].isochroneError = null; }
     } catch (error) {
         console.error('Erro ao criar isócronas:', error);
-        
-        // Remover marcador de carregamento em caso de erro
-        if (station.loadingMarker && map.hasLayer(station.loadingMarker)) {
-            map.removeLayer(station.loadingMarker);
-        }
+        if (station.loadingMarker && map.hasLayer(station.loadingMarker)) map.removeLayer(station.loadingMarker);
         station.loadingMarker = null;
-        
-        // Não criar círculos de fallback - mostrar erro
-        station.isochrones = null;
-        station.isochroneError = error.message || 'Erro ao obter isócronas';
-        
-        // Atualizar também no array stations
-        const stationIndex = stations.findIndex(s => s.id === station.id);
-        if (stationIndex !== -1) {
-            stations[stationIndex].isochrones = null;
-            stations[stationIndex].isochroneError = station.isochroneError;
-        }
-        
-        // Inicializar array de camadas para esta estação
-        if (!stationIsochroneLayers[station.id]) {
-            stationIsochroneLayers[station.id] = [];
-        }
-        
-        // Mostrar mensagem de erro no marcador
+        station.isochrones = null; station.isochroneError = error.message || 'Erro ao obter isócronas';
+        const idx = stations.findIndex(s => s.id === station.id);
+        if (idx !== -1) { stations[idx].isochrones = null; stations[idx].isochroneError = station.isochroneError; }
+        if (!stationIsochroneLayers[station.id]) stationIsochroneLayers[station.id] = [];
+
         const errorMarker = L.marker([station.lat, station.lng], {
             icon: L.divIcon({
                 className: 'error-marker',
-                html: `<div style="
-                    background: #fc8181;
-                    width: 24px;
-                    height: 24px;
-                    border-radius: 50%;
-                    border: 3px solid white;
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-                    position: relative;
-                " title="Erro ao carregar isócronas"></div>`,
-                iconSize: [24, 24],
-                iconAnchor: [12, 12]
+                html: `<div style="background:#fc8181;width:24px;height:24px;border-radius:50%;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.3);" title="Erro"></div>`,
+                iconSize: [24, 24], iconAnchor: [12, 12]
             })
         }).addTo(map);
-        
-        errorMarker.bindPopup(`
-            <div style="padding: 8px;">
-                <strong>Erro ao carregar isócronas</strong><br>
-                <small>${station.isochroneError}</small><br>
-                <small style="color: #718096;">As isócronas não estão disponíveis para esta estação.</small>
-            </div>
-        `).openPopup();
-        
-        isochroneLayers.push(errorMarker);
-        stationIsochroneLayers[station.id].push(errorMarker);
+        errorMarker.bindPopup(`<div style="padding:8px;"><strong>Erro ao carregar isócronas</strong><br><small>${station.isochroneError}</small></div>`).openPopup();
+        isochroneLayers.push(errorMarker); stationIsochroneLayers[station.id].push(errorMarker);
     } finally {
-        // Sempre limpar a flag de criação
         station.creatingIsochrones = false;
     }
 }
 
-// Remover isócronas de uma estação específica
 function removeStationIsochrones(stationId) {
-    // Remover apenas as camadas desta estação
     if (stationIsochroneLayers[stationId]) {
-        stationIsochroneLayers[stationId].forEach(layer => {
-            try {
-                if (map.hasLayer(layer)) {
-                    map.removeLayer(layer);
-                }
-            } catch (e) {
-                console.warn('Erro ao remover layer:', e);
-            }
-            // Remover do array global também
-            const index = isochroneLayers.indexOf(layer);
-            if (index > -1) {
-                isochroneLayers.splice(index, 1);
-            }
+        stationIsochroneLayers[stationId].forEach(l => {
+            try { if (map.hasLayer(l)) map.removeLayer(l); } catch {}
+            const idx = isochroneLayers.indexOf(l);
+            if (idx > -1) isochroneLayers.splice(idx, 1);
         });
-        // Limpar referências desta estação
         delete stationIsochroneLayers[stationId];
     }
-    
-    // Também remover marcador de carregamento se existir
-    const station = stations.find(s => s.id === stationId);
-    if (station && station.loadingMarker) {
-        try {
-            if (map.hasLayer(station.loadingMarker)) {
-                map.removeLayer(station.loadingMarker);
-            }
-        } catch (e) {
-            console.warn('Erro ao remover loading marker:', e);
-        }
-        station.loadingMarker = null;
-    }
+    const s = stations.find(s => s.id === stationId);
+    if (s && s.loadingMarker) { try { if (map.hasLayer(s.loadingMarker)) map.removeLayer(s.loadingMarker); } catch {} s.loadingMarker = null; }
 }
 
-// Calcular população
+// ============================================================
+//                  POPULATION CALCULATION
+// ============================================================
 async function calculatePopulation() {
     if (stations.length === 0) {
-        updateSidebarStats({
-            total_population: 0,
-            total_population_5min: 0,
-            total_population_10min: 0,
-            points: []
-        });
+        updateSidebarStats({ total_population: 0, total_population_5min: 0, total_population_10min: 0, points: [] });
         updateSidebar();
         return;
     }
-    
+
     try {
-        const response = await fetch('http://localhost:5000/api/population-in-isochrones', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                points: stations.map(s => ({
-                    id: s.id,
-                    lat: s.lat,
-                    lng: s.lng,
-                    isochrones: (s.isochrones && !s.isochroneError && Array.isArray(s.isochrones) && s.isochrones.length >= 2) ? s.isochrones : null  // Enviar isócronas apenas se disponíveis e sem erro
-                }))
-            })
-        });
-        
-        if (!response.ok) {
-            throw new Error('Erro ao calcular população');
+        const payload = {
+            points: stations.map(s => ({
+                id: s.id, lat: s.lat, lng: s.lng,
+                isochrones: (s.isochrones && !s.isochroneError && Array.isArray(s.isochrones) && s.isochrones.length >= 2) ? s.isochrones : null
+            }))
+        };
+
+        // Include scenario overrides if any exist
+        if (Object.keys(densityOverrides).length > 0) {
+            payload.density_overrides = densityOverrides;
         }
-        
-        const data = await response.json();
-        
-        // Atualizar dados das estações
-        stations = stations.map(station => {
-            // Comparar IDs convertendo ambos para string para garantir correspondência
-            const pointData = data.points.find(p => {
-                const pId = String(p.id);
-                const sId = String(station.id);
-                return pId === sId;
-            });
-            
-            if (pointData) {
-                // Garantir que os valores são números
-                return {
-                    ...station,
-                    population_5min: Number(pointData.population_5min) || 0,
-                    population_10min: Number(pointData.population_10min) || 0,
-                    population_total: Number(pointData.population_total) || 0
-                };
-            }
-            // Se não encontrou, manter valores existentes ou zerar
-            return {
-                ...station,
-                population_5min: Number(station.population_5min) || 0,
-                population_10min: Number(station.population_10min) || 0,
-                population_total: Number(station.population_total) || 0
-            };
+        if (newUrbanizations.length > 0) {
+            payload.new_urbanization_features = newUrbanizations.map(u => ({
+                type: 'Feature',
+                geometry: u.geometry,
+                properties: { estimated_pop: u.estimatedPop, name: u.name }
+            }));
+        }
+
+        const response = await fetch('/api/population-in-isochrones', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
         });
-        
+
+        if (!response.ok) throw new Error('Erro ao calcular população');
+        const data = await response.json();
+
+        stations = stations.map(station => {
+            const pd = data.points.find(p => String(p.id) === String(station.id));
+            if (pd) {
+                return { ...station, population_5min: Number(pd.population_5min) || 0, population_10min: Number(pd.population_10min) || 0, population_total: Number(pd.population_total) || 0 };
+            }
+            return { ...station, population_5min: Number(station.population_5min) || 0, population_10min: Number(station.population_10min) || 0, population_total: Number(station.population_total) || 0 };
+        });
+
         updateSidebarStats(data);
-        updateSidebar(); // Atualizar sidebar para mostrar valores atualizados
+        updateSidebar();
     } catch (error) {
         console.error('Erro ao calcular população:', error);
-        // Em caso de erro, ainda atualizamos a sidebar sem dados de população
-        // Mas mantemos os valores existentes se houver
-        stations = stations.map(s => ({
-            ...s,
-            population_5min: Number(s.population_5min) || 0,
-            population_10min: Number(s.population_10min) || 0,
-            population_total: Number(s.population_total) || 0
-        }));
-        
-        updateSidebarStats({
-            total_population: 0,
-            total_population_5min: 0,
-            total_population_10min: 0,
-            points: stations.map(s => ({
-                id: s.id,
-                population_5min: s.population_5min || 0,
-                population_10min: s.population_10min || 0,
-                population_total: s.population_total || 0
-            }))
-        });
-        updateSidebar(); // Atualizar sidebar mesmo em caso de erro
+        stations = stations.map(s => ({ ...s, population_5min: Number(s.population_5min) || 0, population_10min: Number(s.population_10min) || 0, population_total: Number(s.population_total) || 0 }));
+        updateSidebarStats({ total_population: 0, total_population_5min: 0, total_population_10min: 0, points: stations.map(s => ({ id: s.id, population_5min: s.population_5min || 0, population_10min: s.population_10min || 0, population_total: s.population_total || 0 })) });
+        updateSidebar();
     }
 }
 
-// Atualizar sidebar com estatísticas
+// ============================================================
+//                      SIDEBAR
+// ============================================================
 function updateSidebarStats(data) {
     document.getElementById('total-population').textContent = formatNumber(data.total_population);
     document.getElementById('total-pop-5min').textContent = formatNumber(data.total_population_5min);
     document.getElementById('total-pop-10min').textContent = formatNumber(data.total_population_10min);
 }
 
-// Atualizar sidebar
 function updateSidebar() {
+    // Per-group stats
+    const groupStatsContainer = document.getElementById('group-stats-container');
+    groupStatsContainer.innerHTML = groups.map(g => {
+        const groupStations = stations.filter(s => s.groupId === g.id);
+        const pop5 = groupStations.reduce((sum, s) => sum + (s.population_5min || 0), 0);
+        const pop10 = groupStations.reduce((sum, s) => sum + (s.population_10min || 0), 0);
+        const total = pop5 + pop10;
+        if (groupStations.length === 0) return '';
+        return `
+            <div class="stat-card group-stat-card" style="border-left: 4px solid ${g.color};">
+                <div class="group-stat-header">
+                    <div class="group-stat-color" style="background:${g.color}"></div>
+                    <span class="group-stat-name">${escapeHtml(g.name)}</span>
+                    <span class="group-stat-count">${groupStations.length} est.</span>
+                </div>
+                <div class="stat-breakdown">
+                    <span class="breakdown-item"><span class="breakdown-label">5 min:</span><span class="breakdown-value">${formatNumber(pop5)}</span></span>
+                    <span class="breakdown-item"><span class="breakdown-label">10 min:</span><span class="breakdown-value">${formatNumber(pop10)}</span></span>
+                    <span class="breakdown-item" style="font-weight:700;"><span class="breakdown-label">Total:</span><span class="breakdown-value">${formatNumber(total)}</span></span>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    // Station cards
     const container = document.getElementById('stations-container');
-    
     if (stations.length === 0) {
         container.innerHTML = '<p class="no-stations">Nenhuma estação adicionada</p>';
         return;
     }
-    
+
     container.innerHTML = stations.map((station, index) => {
-        const pop5min = station.population_5min || 0;
-        const pop10min = station.population_10min || 0;
-        const popTotal = station.population_total || 0;
+        const group = getGroupForStation(station);
+        const pop5 = station.population_5min || 0;
+        const pop10 = station.population_10min || 0;
+        const popT = station.population_total || 0;
         const hasError = station.isochroneError;
-        
         return `
             <div class="station-item ${hasError ? 'station-error' : ''}">
                 <div class="station-item-header">
-                    <span class="station-name">Estação ${index + 1}${hasError ? ' ⚠️' : ''}</span>
+                    <span class="station-name"><span class="station-group-dot" style="background:${group.color}"></span> Estação ${index + 1}${hasError ? ' ⚠️' : ''}</span>
                     <button class="btn-remove" onclick="removeStation(${station.id})" title="Remover">×</button>
                 </div>
-                ${hasError ? `
-                    <div style="background: #fed7d7; color: #c53030; padding: 8px; border-radius: 4px; margin-bottom: 8px; font-size: 12px;">
-                        ⚠️ Erro ao carregar isócronas: ${station.isochroneError}
-                    </div>
-                ` : ''}
+                ${hasError ? `<div style="background:#fed7d7;color:#c53030;padding:8px;border-radius:4px;margin-bottom:8px;font-size:12px;">⚠️ ${station.isochroneError}</div>` : ''}
                 <div class="station-stats">
-                    <div class="station-stat-row">
-                        <span class="station-stat-label">Área Primária (5 min):</span>
-                        <span class="station-stat-value">${formatNumber(pop5min)}</span>
-                    </div>
-                    <div class="station-stat-row">
-                        <span class="station-stat-label">Área Secundária (10 min):</span>
-                        <span class="station-stat-value">${formatNumber(pop10min)}</span>
-                    </div>
-                    <div class="station-stat-row" style="border-top: 2px solid #e2e8f0; margin-top: 4px; padding-top: 8px; font-weight: 600;">
-                        <span class="station-stat-label">Total:</span>
-                        <span class="station-stat-value">${formatNumber(popTotal)}</span>
-                    </div>
+                    <div class="station-stat-row"><span class="station-stat-label">Área Primária (5 min):</span><span class="station-stat-value">${formatNumber(pop5)}</span></div>
+                    <div class="station-stat-row"><span class="station-stat-label">Área Secundária (10 min):</span><span class="station-stat-value">${formatNumber(pop10)}</span></div>
+                    <div class="station-stat-row" style="border-top:2px solid #e2e8f0;margin-top:4px;padding-top:8px;font-weight:600;"><span class="station-stat-label">Total:</span><span class="station-stat-value">${formatNumber(popT)}</span></div>
                 </div>
             </div>
         `;
     }).join('');
 }
 
-// Formatar número
+// ============================================================
+//            SCENARIO MODE — CENSUS LAYER
+// ============================================================
+async function loadCensusLayer() {
+    if (censusLayer) return; // already loaded
+
+    try {
+        const res = await fetch('/api/census-geojson');
+        if (!res.ok) throw new Error('Erro ao carregar GeoJSON');
+        censusGeoJSON = await res.json();
+
+        censusLayer = L.geoJSON(censusGeoJSON, {
+            style: (feature) => getCensusStyle(feature),
+            onEachFeature: (feature, layer) => {
+                layer.on('click', (e) => {
+                    if (activeTab === 'scenario') {
+                        L.DomEvent.stopPropagation(e);
+                        selectCensusFeature(feature, layer);
+                    }
+                });
+            }
+        }).addTo(map);
+    } catch (err) {
+        console.error('Erro ao carregar camada de censos:', err);
+    }
+}
+
+function removeCensusLayer() {
+    if (censusLayer) { map.removeLayer(censusLayer); censusLayer = null; }
+}
+
+function getCensusStyle(feature) {
+    const props = feature.properties;
+    const bgriId = props.BGRI2021 || props.SUBSECCAO || props.OBJECTID;
+    const override = densityOverrides[bgriId];
+
+    if (override) {
+        const dt = DENSITY_TYPES[override.densityType];
+        return { color: '#333', weight: 1, fillColor: dt.color, fillOpacity: 0.55 };
+    }
+
+    // Default: choropleth by population density
+    const pop = props.N_INDIVIDUOS || 0;
+    const area_m2 = props.SHAPE_Area || 1;
+    const area_ha = area_m2 / 10000;
+    const density = area_ha > 0 ? pop / area_ha : 0;
+
+    let fillColor = '#e2e8f0';
+    if (density > 300) fillColor = '#e53e3e';
+    else if (density > 200) fillColor = '#ed8936';
+    else if (density > 100) fillColor = '#f6e05e';
+    else if (density > 50) fillColor = '#9ae6b4';
+    else if (density > 10) fillColor = '#c6f6d5';
+
+    return { color: '#718096', weight: 0.5, fillColor, fillOpacity: 0.35 };
+}
+
+function selectCensusFeature(feature, layer) {
+    selectedCensusFeature = { feature, layer };
+    const props = feature.properties;
+    const bgriId = props.BGRI2021 || props.SUBSECCAO || props.OBJECTID;
+    const pop = props.N_INDIVIDUOS || 0;
+    const area_m2 = props.SHAPE_Area || 1;
+    const area_ha = area_m2 / 10000;
+    const density = area_ha > 0 ? (pop / area_ha).toFixed(1) : '—';
+
+    document.getElementById('edit-bgri-id').textContent = bgriId;
+    document.getElementById('edit-current-pop').textContent = formatNumber(pop);
+    document.getElementById('edit-area').textContent = area_ha.toFixed(2);
+    document.getElementById('edit-current-density').textContent = density;
+
+    const override = densityOverrides[bgriId];
+    const sel = document.getElementById('edit-density-select');
+    sel.value = override ? override.densityType : '';
+
+    // Coverage slider: show only when a density type is selected
+    const coverageField = document.getElementById('edit-coverage-field');
+    const coverageSlider = document.getElementById('edit-coverage');
+    const coverageLabel = document.getElementById('edit-coverage-value');
+    if (override) {
+        const savedCoverage = override.coverage !== undefined ? override.coverage : 40;
+        coverageSlider.value = savedCoverage;
+        coverageLabel.textContent = savedCoverage + '%';
+        coverageField.classList.remove('hidden');
+    } else {
+        coverageSlider.value = 40;
+        coverageLabel.textContent = '40%';
+        coverageField.classList.add('hidden');
+    }
+    updateEstimatedPop();
+
+    // Show revert button only when an override is active for this BGRI
+    document.getElementById('btn-revert-density').classList.toggle('hidden', !override);
+
+    document.getElementById('edit-panel').classList.remove('hidden');
+}
+
+function updateEstimatedPop() {
+    const sel = document.getElementById('edit-density-select');
+    const typeIdx = parseInt(sel.value);
+    if (isNaN(typeIdx) || !selectedCensusFeature) {
+        document.getElementById('edit-estimated-pop').textContent = '—';
+        return;
+    }
+    const dt = DENSITY_TYPES[typeIdx];
+    const area_m2 = selectedCensusFeature.feature.properties.SHAPE_Area || 1;
+    const area_ha = area_m2 / 10000;
+    const coverage = parseInt(document.getElementById('edit-coverage').value) / 100;
+    const est = Math.round(dt.residents_ha * area_ha * coverage);
+    document.getElementById('edit-estimated-pop').textContent = formatNumber(est);
+}
+
+function applyDensityEdit() {
+    if (!selectedCensusFeature) return;
+    const sel = document.getElementById('edit-density-select');
+    const typeIdx = parseInt(sel.value);
+    if (isNaN(typeIdx)) return;
+
+    const props = selectedCensusFeature.feature.properties;
+    const bgriId = props.BGRI2021 || props.SUBSECCAO || props.OBJECTID;
+    const dt = DENSITY_TYPES[typeIdx];
+    const area_m2 = props.SHAPE_Area || 1;
+    const area_ha = area_m2 / 10000;
+    const coverage = parseInt(document.getElementById('edit-coverage').value) / 100;
+    const newPop = Math.round(dt.residents_ha * area_ha * coverage);
+
+    densityOverrides[bgriId] = { densityType: typeIdx, coverage: parseInt(document.getElementById('edit-coverage').value), populationOverride: newPop };
+
+    // Re-style layer
+    selectedCensusFeature.layer.setStyle({ color: '#333', weight: 1, fillColor: dt.color, fillOpacity: 0.55 });
+
+    cancelEdit();
+    updateScenarioSummary();
+}
+
+function revertDensityEdit() {
+    if (!selectedCensusFeature) return;
+    const props = selectedCensusFeature.feature.properties;
+    const bgriId = props.BGRI2021 || props.SUBSECCAO || props.OBJECTID;
+
+    delete densityOverrides[bgriId];
+
+    // Restore original choropleth style
+    selectedCensusFeature.layer.setStyle(getCensusStyle(selectedCensusFeature.feature));
+
+    cancelEdit();
+    updateScenarioSummary();
+}
+
+function cancelEdit() {
+    selectedCensusFeature = null;
+    document.getElementById('edit-panel').classList.add('hidden');
+}
+
+// ============================================================
+//             SCENARIO MODE — URBANIZATIONS
+// ============================================================
+function startDrawUrbanization() {
+    isDrawingUrbanization = true;
+    // Enable polygon drawing
+    const drawHandler = new L.Draw.Polygon(map, {
+        shapeOptions: { color: '#38a169', weight: 2, fillOpacity: 0.3 }
+    });
+    drawHandler.enable();
+}
+
+function showUrbanizationModal() {
+    const modal = document.getElementById('urbanization-modal');
+    modal.classList.remove('hidden');
+    document.getElementById('urb-name').value = `Urbanização ${newUrbanizations.length + 1}`;
+    updateUrbanizationEstimate();
+}
+
+function updateUrbanizationEstimate() {
+    const floorsSlider = document.getElementById('urb-floors');
+    const coverageSlider = document.getElementById('urb-coverage');
+    document.getElementById('urb-floors-value').textContent = floorsSlider.value;
+    document.getElementById('urb-coverage-value').textContent = coverageSlider.value + '%';
+
+    if (!pendingUrbanizationGeometry) {
+        document.getElementById('urb-estimated-pop').textContent = '—';
+        return;
+    }
+
+    const typeIdx = parseInt(document.getElementById('urb-density-type').value);
+    if (isNaN(typeIdx)) { document.getElementById('urb-estimated-pop').textContent = '—'; return; }
+
+    const dt = DENSITY_TYPES[typeIdx];
+    const area = turf.area(pendingUrbanizationGeometry); // m²
+    const area_ha = area / 10000;
+    const floors = parseInt(floorsSlider.value);
+    const coverage = parseInt(coverageSlider.value) / 100;
+
+    // Estimated pop: base density * area * adjustment for floors and coverage
+    // The density type already accounts for building type, but we scale by (floors * coverage) / reference
+    // Reference: density types assume typical coverage/floors for their type
+    const est = Math.round(dt.residents_ha * area_ha * coverage * (floors / 3));
+    document.getElementById('urb-estimated-pop').textContent = formatNumber(Math.max(0, est));
+}
+
+function confirmUrbanization() {
+    if (!pendingUrbanizationGeometry) return;
+
+    const name = document.getElementById('urb-name').value || `Urbanização ${newUrbanizations.length + 1}`;
+    const typeIdx = parseInt(document.getElementById('urb-density-type').value);
+    const floors = parseInt(document.getElementById('urb-floors').value);
+    const coverage = parseInt(document.getElementById('urb-coverage').value);
+    const diffuse = document.getElementById('urb-diffuse').checked;
+
+    const dt = DENSITY_TYPES[typeIdx] || DENSITY_TYPES[2];
+    const area = turf.area(pendingUrbanizationGeometry);
+    const area_ha = area / 10000;
+    const est = Math.round(dt.residents_ha * area_ha * (coverage / 100) * (floors / 3));
+
+    const urb = {
+        id: Date.now(),
+        name,
+        geometry: pendingUrbanizationGeometry,
+        densityType: typeIdx,
+        floors,
+        coverage,
+        diffuse,
+        estimatedPop: Math.max(0, est),
+        layers: []
+    };
+
+    // Draw on map
+    const coreLayer = L.geoJSON({ type: 'Feature', geometry: pendingUrbanizationGeometry, properties: {} }, {
+        style: { color: '#276749', weight: 2, fillColor: dt.color, fillOpacity: 0.45, dashArray: '5,5' }
+    }).addTo(map);
+
+    // Add label
+    const center = turf.centroid({ type: 'Feature', geometry: pendingUrbanizationGeometry, properties: {} });
+    const labelMarker = L.marker([center.geometry.coordinates[1], center.geometry.coordinates[0]], {
+        icon: L.divIcon({
+            className: '',
+            html: `<div style="display:inline-block;background:rgba(39,103,73,0.85);color:white;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.3);">${escapeHtml(name)}: ${formatNumber(est)} hab</div>`,
+            iconSize: null,
+            iconAnchor: [0, 0]
+        })
+    }).addTo(map);
+
+    urb.layers = [coreLayer, labelMarker];
+    urbanizationLayers.push(coreLayer, labelMarker);
+
+    // Diffusion rings
+    if (diffuse) {
+        const rings = [
+            { dist: 0.05, pctLabel: '60%', opacity: 0.25 },
+            { dist: 0.1, pctLabel: '30%', opacity: 0.15 },
+            { dist: 0.2, pctLabel: '10%', opacity: 0.08 }
+        ];
+        rings.forEach(r => {
+            try {
+                const buffered = turf.buffer(pendingUrbanizationGeometry, r.dist, { units: 'kilometers' });
+                const ring = turf.difference(turf.featureCollection([
+                    turf.feature(buffered.geometry || buffered),
+                    turf.feature(pendingUrbanizationGeometry)
+                ].filter(Boolean)));
+                // Simpler: just draw the buffer
+                const ringLayer = L.geoJSON(buffered, {
+                    style: { color: dt.color, weight: 0.5, fillColor: dt.color, fillOpacity: r.opacity, dashArray: '2,4' }
+                }).addTo(map);
+                urb.layers.push(ringLayer);
+                urbanizationLayers.push(ringLayer);
+            } catch (e) {
+                console.warn('Diffusion ring error:', e);
+            }
+        });
+    }
+
+    newUrbanizations.push(urb);
+
+    // Cleanup
+    drawnItems.clearLayers();
+    pendingUrbanizationGeometry = null;
+    isDrawingUrbanization = false;
+    document.getElementById('urbanization-modal').classList.add('hidden');
+    renderUrbanizations();
+    updateScenarioSummary();
+}
+
+function cancelUrbanization() {
+    drawnItems.clearLayers();
+    pendingUrbanizationGeometry = null;
+    isDrawingUrbanization = false;
+    document.getElementById('urbanization-modal').classList.add('hidden');
+}
+
+function removeUrbanization(urbId) {
+    const idx = newUrbanizations.findIndex(u => u.id === urbId);
+    if (idx === -1) return;
+    const urb = newUrbanizations[idx];
+    urb.layers.forEach(l => { try { map.removeLayer(l); } catch {} });
+    newUrbanizations.splice(idx, 1);
+    renderUrbanizations();
+    updateScenarioSummary();
+}
+
+function renderUrbanizations() {
+    const container = document.getElementById('urbanizations-list');
+    if (newUrbanizations.length === 0) {
+        container.innerHTML = '<p class="no-stations">Nenhuma urbanização criada</p>';
+        return;
+    }
+    container.innerHTML = newUrbanizations.map(u => {
+        const dt = DENSITY_TYPES[u.densityType] || DENSITY_TYPES[2];
+        return `
+            <div class="urbanization-item">
+                <div class="urbanization-item-header">
+                    <span class="urbanization-name">${escapeHtml(u.name)}</span>
+                    <button class="btn-remove" onclick="removeUrbanization(${u.id})" title="Remover">×</button>
+                </div>
+                <div class="urbanization-details">
+                    <span>${dt.label} · ${u.floors} pisos · ${u.coverage}% cobertura</span>
+                    <span><strong>${formatNumber(u.estimatedPop)}</strong> habitantes estimados</span>
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+// ============================================================
+//              SCENARIO SUMMARY & RECALCULATE
+// ============================================================
+function updateScenarioSummary() {
+    if (!censusGeoJSON) {
+        document.getElementById('scenario-base-pop').textContent = '—';
+        document.getElementById('scenario-proj-pop').textContent = '—';
+        document.getElementById('scenario-delta').textContent = '—';
+        return;
+    }
+
+    let basePop = 0;
+    let projPop = 0;
+
+    censusGeoJSON.features.forEach(f => {
+        const props = f.properties;
+        const bgriId = props.BGRI2021 || props.SUBSECCAO || props.OBJECTID;
+        const pop = props.N_INDIVIDUOS || 0;
+        basePop += pop;
+
+        const override = densityOverrides[bgriId];
+        projPop += override ? override.populationOverride : pop;
+    });
+
+    // Add urbanization estimated pop
+    const urbPop = newUrbanizations.reduce((s, u) => s + u.estimatedPop, 0);
+    projPop += urbPop;
+
+    const delta = projPop - basePop;
+    const sign = delta >= 0 ? '+' : '';
+
+    document.getElementById('scenario-base-pop').textContent = formatNumber(basePop);
+    document.getElementById('scenario-proj-pop').textContent = formatNumber(projPop);
+    document.getElementById('scenario-delta').textContent = `${sign}${formatNumber(delta)}`;
+    document.getElementById('scenario-delta').style.color = delta >= 0 ? '#38a169' : '#e53e3e';
+}
+
+async function recalculateCatchment() {
+    await calculatePopulation();
+    updateScenarioSummary();
+    alert('Catchment recalculado com as alterações do cenário!');
+}
+
+function resetScenario() {
+    if (!confirm('Limpar todas as alterações de cenário?')) return;
+    densityOverrides = {};
+    newUrbanizations.forEach(u => u.layers.forEach(l => { try { map.removeLayer(l); } catch {} }));
+    newUrbanizations = [];
+    urbanizationLayers = [];
+    drawnItems.clearLayers();
+    if (censusLayer) {
+        censusLayer.setStyle((feature) => getCensusStyle(feature));
+    }
+    renderUrbanizations();
+    updateScenarioSummary();
+    cancelEdit();
+}
+
+// ============================================================
+//                  DENSITY HELPERS
+// ============================================================
+function populateDensitySelects() {
+    const options = DENSITY_TYPES.map((dt, i) => `<option value="${i}">${dt.label} (${dt.residents_ha} hab/ha)</option>`).join('');
+    const blankOption = '<option value="">— Selecionar —</option>';
+    document.getElementById('edit-density-select').innerHTML = blankOption + options;
+    document.getElementById('urb-density-type').innerHTML = options;
+}
+
+function renderDensityLegend() {
+    document.getElementById('density-types-list').innerHTML = DENSITY_TYPES.map(dt => `
+        <div class="density-type-row">
+            <div class="density-type-swatch" style="background:${dt.color}"></div>
+            <span class="density-type-label">${dt.label}</span>
+            <span class="density-type-value">${dt.residents_ha} hab/ha</span>
+        </div>
+    `).join('');
+}
+
+// ============================================================
+//                  PROJECT SAVE / LOAD
+// ============================================================
+function saveProject() {
+    const project = {
+        version: '2.0',
+        saved_at: new Date().toISOString(),
+        groups: groups.map(g => ({ id: g.id, name: g.name, color: g.color, visible: g.visible })),
+        activeGroupId,
+        stations: stations.map(s => ({
+            id: s.id, lat: s.lat, lng: s.lng, groupId: s.groupId,
+            population_5min: s.population_5min || 0,
+            population_10min: s.population_10min || 0,
+            population_total: s.population_total || 0
+        })),
+        densityOverrides,
+        newUrbanizations: newUrbanizations.map(u => ({
+            id: u.id, name: u.name, geometry: u.geometry, densityType: u.densityType,
+            floors: u.floors, coverage: u.coverage, diffuse: u.diffuse, estimatedPop: u.estimatedPop
+        }))
+    };
+
+    const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `projeto_estacoes_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a); a.click();
+    URL.revokeObjectURL(url); document.body.removeChild(a);
+}
+
+async function loadProject(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    try {
+        const text = await file.text();
+        const project = JSON.parse(text);
+
+        if (!project.version || !project.groups) {
+            alert('Ficheiro de projeto inválido.');
+            return;
+        }
+
+        // Clear current state
+        stations.forEach(s => removeStationIsochrones(s.id));
+        stationMarkers.forEach(m => { try { map.removeLayer(m); } catch {} });
+        newUrbanizations.forEach(u => u.layers.forEach(l => { try { map.removeLayer(l); } catch {} }));
+        if (censusLayer) { map.removeLayer(censusLayer); censusLayer = null; }
+        drawnItems.clearLayers();
+
+        // Restore groups
+        groups = project.groups.map(g => ({ ...g }));
+        activeGroupId = project.activeGroupId || (groups[0] && groups[0].id);
+
+        // Restore stations (will trigger isochrone fetch)
+        stations = project.stations.map(s => ({
+            id: s.id, lat: s.lat, lng: s.lng, groupId: s.groupId,
+            population_5min: s.population_5min || 0,
+            population_10min: s.population_10min || 0,
+            population_total: s.population_total || 0
+        }));
+
+        // Restore scenario
+        densityOverrides = project.densityOverrides || {};
+        newUrbanizations = [];
+        urbanizationLayers = [];
+
+        // Re-create urbanization visuals
+        if (project.newUrbanizations && project.newUrbanizations.length > 0) {
+            project.newUrbanizations.forEach(u => {
+                const dt = DENSITY_TYPES[u.densityType] || DENSITY_TYPES[2];
+                const layers = [];
+                const coreLayer = L.geoJSON({ type: 'Feature', geometry: u.geometry, properties: {} }, {
+                    style: { color: '#276749', weight: 2, fillColor: dt.color, fillOpacity: 0.45, dashArray: '5,5' }
+                }).addTo(map);
+                layers.push(coreLayer);
+                urbanizationLayers.push(coreLayer);
+
+                const center = turf.centroid({ type: 'Feature', geometry: u.geometry, properties: {} });
+                const labelMarker = L.marker([center.geometry.coordinates[1], center.geometry.coordinates[0]], {
+                    icon: L.divIcon({
+                        className: '',
+                        html: `<div style="display:inline-block;background:rgba(39,103,73,0.85);color:white;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.3);">${escapeHtml(u.name)}: ${formatNumber(u.estimatedPop)} hab</div>`,
+                        iconSize: null,
+                        iconAnchor: [0, 0]
+                    })
+                }).addTo(map);
+                layers.push(labelMarker);
+                urbanizationLayers.push(labelMarker);
+
+                newUrbanizations.push({ ...u, layers });
+            });
+        }
+
+        // Update UI
+        stationMarkers = [];
+        stationIsochroneLayers = {};
+        isochroneLayers = [];
+        renderGroups();
+        updateMap();
+        updateSidebar();
+        renderUrbanizations();
+        updateScenarioSummary();
+        saveState();
+
+        alert(`Projeto carregado: ${groups.length} grupo(s), ${stations.length} estação(ões)`);
+    } catch (e) {
+        console.error('Erro ao carregar projeto:', e);
+        alert('Erro ao carregar projeto: ' + e.message);
+    }
+
+    event.target.value = '';
+}
+
+// ============================================================
+//                  CSV EXPORT / IMPORT
+// ============================================================
+async function exportToCSV() {
+    if (stations.length === 0) { alert('Não há estações para exportar'); return; }
+    try {
+        const response = await fetch('/api/export-points', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                points: stations.map(s => {
+                    const g = getGroupForStation(s);
+                    return {
+                        id: s.id, lat: s.lat, lng: s.lng,
+                        group_id: s.groupId, group_name: g.name,
+                        population_5min: s.population_5min || 0,
+                        population_10min: s.population_10min || 0,
+                        population_total: s.population_total || 0
+                    };
+                })
+            })
+        });
+        if (!response.ok) throw new Error('Erro ao exportar CSV');
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `estacoes_${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a); a.click(); URL.revokeObjectURL(url); document.body.removeChild(a);
+    } catch (e) { console.error('Erro ao exportar CSV:', e); alert('Erro: ' + e.message); }
+}
+
+async function importFromCSV(event) {
+    const file = event.target.files[0];
+    if (!file || !file.name.endsWith('.csv')) { alert('Selecione um ficheiro CSV'); return; }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await fetch('/api/import-points', { method: 'POST', body: formData });
+        if (!response.ok) { const err = await response.json(); throw new Error(err.error || 'Erro'); }
+        const data = await response.json();
+
+        if (data.success && data.points && data.points.length > 0) {
+            saveState();
+            const addMode = confirm(`Encontrados ${data.count} pontos.\n\nOK = Adicionar\nCancelar = Substituir`);
+
+            // Reconstruct groups from import if group_name present
+            const importedGroups = {};
+            data.points.forEach(p => {
+                if (p.group_name && !importedGroups[p.group_name]) {
+                    importedGroups[p.group_name] = true;
+                }
+            });
+            Object.keys(importedGroups).forEach(gn => {
+                if (!groups.find(g => g.name === gn)) createGroup(gn);
+            });
+
+            const resolveGroupId = (point) => {
+                if (point.group_name) {
+                    const g = groups.find(g => g.name === point.group_name);
+                    if (g) return g.id;
+                }
+                return activeGroupId || groups[0].id;
+            };
+
+            if (addMode) {
+                data.points.forEach(p => {
+                    const exists = stations.some(s => Math.abs(s.lat - p.lat) < 0.0001 && Math.abs(s.lng - p.lng) < 0.0001);
+                    if (!exists) stations.push({ id: p.id || Date.now() + Math.random(), lat: p.lat, lng: p.lng, groupId: resolveGroupId(p) });
+                });
+            } else {
+                stations = data.points.map(p => ({ id: p.id || Date.now() + Math.random(), lat: p.lat, lng: p.lng, groupId: resolveGroupId(p) }));
+            }
+
+            event.target.value = '';
+            renderGroups(); updateMap(); updateSidebar(); calculatePopulation();
+            alert(`Importados ${data.count} pontos!`);
+        } else { alert('Nenhum ponto válido encontrado'); }
+    } catch (e) { console.error('Erro import:', e); alert('Erro: ' + e.message); event.target.value = ''; }
+}
+
+// ============================================================
+//                       UTILITIES
+// ============================================================
 function formatNumber(num) {
     return new Intl.NumberFormat('pt-PT').format(Math.round(num || 0));
 }
 
-// Inicializar quando a página carregar
+function escapeHtml(str) {
+    const d = document.createElement('div');
+    d.textContent = str;
+    return d.innerHTML;
+}
+
+// ============================================================
+//                       INIT
+// ============================================================
 document.addEventListener('DOMContentLoaded', function() {
-    console.log('DOM carregado, inicializando mapa...');
-    try {
-        initMap();
-        console.log('Mapa inicializado com sucesso');
-    } catch (error) {
-        console.error('Erro ao inicializar mapa:', error);
-    }
+    try { initMap(); console.log('App v2.0 inicializada'); } catch (e) { console.error('Erro init:', e); }
 });
 
-// Exportar pontos para CSV
-async function exportToCSV() {
-    if (stations.length === 0) {
-        alert('Não há estações para exportar');
-        return;
-    }
-    
-    try {
-        const response = await fetch('http://localhost:5000/api/export-points', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                points: stations.map(s => ({
-                    id: s.id,
-                    lat: s.lat,
-                    lng: s.lng,
-                    population_5min: s.population_5min || 0,
-                    population_10min: s.population_10min || 0,
-                    population_total: s.population_total || 0
-                }))
-            })
-        });
-        
-        if (!response.ok) {
-            throw new Error('Erro ao exportar CSV');
-        }
-        
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `estacoes_${new Date().toISOString().split('T')[0]}.csv`;
-        document.body.appendChild(a);
-        a.click();
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
-    } catch (error) {
-        console.error('Erro ao exportar CSV:', error);
-        alert('Erro ao exportar CSV: ' + error.message);
-    }
-}
-
-// Importar pontos de CSV
-async function importFromCSV(event) {
-    const file = event.target.files[0];
-    if (!file) {
-        return;
-    }
-    
-    if (!file.name.endsWith('.csv')) {
-        alert('Por favor, selecione um arquivo CSV');
-        return;
-    }
-    
-    const formData = new FormData();
-    formData.append('file', file);
-    
-    try {
-        const response = await fetch('http://localhost:5000/api/import-points', {
-            method: 'POST',
-            body: formData
-        });
-        
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error || 'Erro ao importar CSV');
-        }
-        
-        const data = await response.json();
-        
-        if (data.success && data.points && data.points.length > 0) {
-            // Salvar estado antes de importar
-            saveState();
-            
-            // Perguntar se quer substituir ou adicionar
-            const action = confirm(
-                `Encontrados ${data.count} pontos no CSV.\n\n` +
-                'OK = Adicionar aos pontos existentes\n' +
-                'Cancelar = Substituir todos os pontos'
-            );
-            
-            if (action) {
-                // Adicionar aos existentes
-                data.points.forEach(point => {
-                    // Verificar se já existe (mesma lat/lng)
-                    const exists = stations.some(s => 
-                        Math.abs(s.lat - point.lat) < 0.0001 && 
-                        Math.abs(s.lng - point.lng) < 0.0001
-                    );
-                    if (!exists) {
-                        stations.push({
-                            id: point.id || Date.now() + Math.random(),
-                            lat: point.lat,
-                            lng: point.lng
-                        });
-                    }
-                });
-            } else {
-                // Substituir todos
-                stations = data.points.map(point => ({
-                    id: point.id || Date.now() + Math.random(),
-                    lat: point.lat,
-                    lng: point.lng
-                }));
-            }
-            
-            // Limpar input
-            event.target.value = '';
-            
-            // Atualizar mapa e calcular população
-            updateMap();
-            updateSidebar();
-            calculatePopulation();
-            
-            alert(`Importados ${data.count} pontos com sucesso!`);
-        } else {
-            alert('Nenhum ponto válido encontrado no CSV');
-        }
-    } catch (error) {
-        console.error('Erro ao importar CSV:', error);
-        alert('Erro ao importar CSV: ' + error.message);
-        event.target.value = '';
-    }
-}
-
-// Tornar removeStation acessível globalmente
+// Global exports
 window.removeStation = removeStation;
+window.removeUrbanization = removeUrbanization;
 
