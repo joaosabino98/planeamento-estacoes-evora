@@ -1,16 +1,27 @@
-# Planeamento de Estações de Transporte Público - Évora
+# Mobilidade e Território — Desenvolvimento Orientado ao Transporte (TOD) — Évora
 
-Ferramenta web interativa para planeamento de estações de transporte público em Évora, com visualização de isócronas reais e cálculo de população residente.
+Ferramenta web interativa para planeamento urbano orientado ao transporte público em Évora. Permite definir grupos de paragens/estações, calcular isócronas reais a pé, estimar população abrangida, simular cenários de densificação urbana e criar novas urbanizações com estimativas de habitação.
 
 ## Funcionalidades
 
+**Planeamento de paragens/estações:**
 - 🗺️ Mapa interativo centrado em Évora
-- 📍 Adicionar estações clicando no mapa
-- 🖱️ Arrastar estações para reposicionar
-- ⏱️ Isócronas reais de 5 e 10 minutos a pé (baseadas em caminhos reais, não círculos)
-- 👥 Cálculo de população residente dentro das áreas de captação
-- 📊 Estatísticas em tempo real no menu lateral
-- 🔄 Atualização automática ao mover estações
+- 📍 Adicionar paragens/estações clicando no mapa, com organização em grupos com cores
+- 🖱️ Arrastar pontos para reposicionar
+- ⏱️ Isócronas reais de 5 e 10 minutos a pé (OpenRouteService)
+- 👥 Cálculo de população residente nas áreas de captação (sem dupla contagem)
+- 📊 Estatísticas por grupo e globais em tempo real
+
+**Cenário urbano (TOD):**
+- 🏘️ Visualização coroplética das subsecções estatísticas (BGRI) por densidade
+- ✏️ Edição da densidade de cada subsecção para simular densificação
+- 🏗️ Criação de novas urbanizações com estimativa de habitação
+- 📈 Comparação entre população base (censos) e projetada no cenário
+
+**Projeto:**
+- 💾 Guardar e carregar projetos completos em JSON
+- 📤 Exportar/importar pontos em CSV
+- ↩️ Undo/redo (Ctrl+Z / Ctrl+Shift+Z)
 
 ## Instalação
 

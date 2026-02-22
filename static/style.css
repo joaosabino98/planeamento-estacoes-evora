@@ -694,10 +694,25 @@ html, body {
     margin-bottom: 6px;
 }
 
-.urbanization-name {
+.urbanization-name-input {
     font-weight: 600;
     font-size: 13px;
     color: #276749;
+    border: none;
+    background: transparent;
+    padding: 0;
+    margin: 0;
+    width: 100%;
+    outline: none;
+    border-bottom: 1px dashed transparent;
+    transition: border-color 0.15s;
+}
+
+.urbanization-name-input:hover,
+.urbanization-name-input:focus {
+    border-bottom-color: #276749;
+    background: rgba(39, 103, 73, 0.05);
+    border-radius: 2px;
 }
 
 .urbanization-details {

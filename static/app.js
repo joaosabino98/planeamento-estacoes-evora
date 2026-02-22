@@ -1,5 +1,5 @@
 // ============================================================
-// Planeamento de Estações v2.0 — app.js
+// Mobilidade e Território — Desenvolvimento Orientado ao Transporte (TOD) — Évora
 // ============================================================
 
 // Coordenadas de Évora (centro da cidade)
@@ -51,7 +51,7 @@ let activeTab = 'stations'; // 'stations' | 'scenario'
 let censusGeoJSON = null;        // raw GeoJSON data
 let censusLayer = null;          // Leaflet GeoJSON layer
 let densityOverrides = {};       // { bgriId: { densityType: <int>, populationOverride: <number> } }
-let newUrbanizations = [];       // [{ id, name, geometry, densityType, floors, coverage, diffuse, estimatedPop, layers[] }]
+let newUrbanizations = [];       // [{ id, name, geometry, densityType, coverage, diffuse, estimatedPop, layers[] }]
 let urbanizationLayers = [];     // all Leaflet layers for urbanizations
 let selectedCensusFeature = null;
 let drawControl = null;
@@ -145,7 +145,6 @@ function initMap() {
     // Urbanization modal
     document.getElementById('btn-create-urbanization').addEventListener('click', confirmUrbanization);
     document.getElementById('btn-cancel-urbanization').addEventListener('click', cancelUrbanization);
-    document.getElementById('urb-floors').addEventListener('input', updateUrbanizationEstimate);
     document.getElementById('urb-coverage').addEventListener('input', updateUrbanizationEstimate);
     document.getElementById('urb-density-type').addEventListener('change', updateUrbanizationEstimate);
 
@@ -920,9 +919,7 @@ function showUrbanizationModal() {
 }
 
 function updateUrbanizationEstimate() {
-    const floorsSlider = document.getElementById('urb-floors');
     const coverageSlider = document.getElementById('urb-coverage');
-    document.getElementById('urb-floors-value').textContent = floorsSlider.value;
     document.getElementById('urb-coverage-value').textContent = coverageSlider.value + '%';
 
     if (!pendingUrbanizationGeometry) {
@@ -936,13 +933,9 @@ function updateUrbanizationEstimate() {
     const dt = DENSITY_TYPES[typeIdx];
     const area = turf.area(pendingUrbanizationGeometry); // m²
     const area_ha = area / 10000;
-    const floors = parseInt(floorsSlider.value);
     const coverage = parseInt(coverageSlider.value) / 100;
 
-    // Estimated pop: base density * area * adjustment for floors and coverage
-    // The density type already accounts for building type, but we scale by (floors * coverage) / reference
-    // Reference: density types assume typical coverage/floors for their type
-    const est = Math.round(dt.residents_ha * area_ha * coverage * (floors / 3));
+    const est = Math.round(dt.residents_ha * area_ha * coverage);
     document.getElementById('urb-estimated-pop').textContent = formatNumber(Math.max(0, est));
 }
 
@@ -951,21 +944,19 @@ function confirmUrbanization() {
 
     const name = document.getElementById('urb-name').value || `Urbanização ${newUrbanizations.length + 1}`;
     const typeIdx = parseInt(document.getElementById('urb-density-type').value);
-    const floors = parseInt(document.getElementById('urb-floors').value);
     const coverage = parseInt(document.getElementById('urb-coverage').value);
     const diffuse = document.getElementById('urb-diffuse').checked;
 
     const dt = DENSITY_TYPES[typeIdx] || DENSITY_TYPES[2];
     const area = turf.area(pendingUrbanizationGeometry);
     const area_ha = area / 10000;
-    const est = Math.round(dt.residents_ha * area_ha * (coverage / 100) * (floors / 3));
+    const est = Math.round(dt.residents_ha * area_ha * (coverage / 100));
 
     const urb = {
         id: Date.now(),
         name,
         geometry: pendingUrbanizationGeometry,
         densityType: typeIdx,
-        floors,
         coverage,
         diffuse,
         estimatedPop: Math.max(0, est),
@@ -1056,16 +1047,40 @@ function renderUrbanizations() {
         return `
             <div class="urbanization-item">
                 <div class="urbanization-item-header">
-                    <span class="urbanization-name">${escapeHtml(u.name)}</span>
+                    <input class="urbanization-name-input" value="${escapeHtml(u.name)}" data-urb-id="${u.id}">
                     <button class="btn-remove" onclick="removeUrbanization(${u.id})" title="Remover">×</button>
                 </div>
                 <div class="urbanization-details">
-                    <span>${dt.label} · ${u.floors} pisos · ${u.coverage}% cobertura</span>
+                    <span>${dt.label} · ${u.coverage}% cobertura</span>
                     <span><strong>${formatNumber(u.estimatedPop)}</strong> habitantes estimados</span>
                 </div>
             </div>
         `;
     }).join('');
+
+    // Wire rename inputs after rendering
+    container.querySelectorAll('.urbanization-name-input').forEach(input => {
+        input.addEventListener('change', () => {
+            renameUrbanization(parseFloat(input.dataset.urbId), input.value);
+        });
+    });
+}
+
+function renameUrbanization(urbId, newName) {
+    const urb = newUrbanizations.find(u => u.id === urbId);
+    if (!urb) return;
+    urb.name = newName || urb.name;
+    // Update the map label (layers[1] is always the label marker)
+    const labelMarker = urb.layers[1];
+    if (labelMarker && labelMarker.setIcon) {
+        const dt = DENSITY_TYPES[urb.densityType] || DENSITY_TYPES[2];
+        labelMarker.setIcon(L.divIcon({
+            className: '',
+            html: `<div style="display:inline-block;background:rgba(39,103,73,0.85);color:white;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:600;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.3);">${escapeHtml(urb.name)}: ${formatNumber(urb.estimatedPop)} hab</div>`,
+            iconSize: null,
+            iconAnchor: [0, 0]
+        }));
+    }
 }
 
 // ============================================================
@@ -1164,7 +1179,7 @@ function saveProject() {
         densityOverrides,
         newUrbanizations: newUrbanizations.map(u => ({
             id: u.id, name: u.name, geometry: u.geometry, densityType: u.densityType,
-            floors: u.floors, coverage: u.coverage, diffuse: u.diffuse, estimatedPop: u.estimatedPop
+            coverage: u.coverage, diffuse: u.diffuse, estimatedPop: u.estimatedPop
         }))
     };
 
@@ -1172,7 +1187,7 @@ function saveProject() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `projeto_estacoes_${new Date().toISOString().split('T')[0]}.json`;
+    a.download = `territorio_evora_projeto_${new Date().toISOString().split('T')[0]}.json`;
     document.body.appendChild(a); a.click();
     URL.revokeObjectURL(url); document.body.removeChild(a);
 }
@@ -1287,7 +1302,7 @@ async function exportToCSV() {
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
-        a.href = url; a.download = `estacoes_${new Date().toISOString().split('T')[0]}.csv`;
+        a.href = url; a.download = `territorio_evora_${new Date().toISOString().split('T')[0]}.csv`;
         document.body.appendChild(a); a.click(); URL.revokeObjectURL(url); document.body.removeChild(a);
     } catch (e) { console.error('Erro ao exportar CSV:', e); alert('Erro: ' + e.message); }
 }

@@ -554,7 +554,7 @@ def export_points():
     response = app.response_class(
         output.getvalue(),
         mimetype='text/csv',
-        headers={'Content-Disposition': 'attachment; filename=estacoes.csv'}
+        headers={'Content-Disposition': 'attachment; filename=territorio_evora.csv'}
     )
     
     return response
