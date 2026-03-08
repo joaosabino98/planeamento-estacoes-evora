@@ -421,10 +421,14 @@ function removeStation(stationId) {
 }
 
 function clearAllStations() {
-    if (confirm('Tem a certeza que deseja remover todas as estações?')) {
+    if (confirm('Tem a certeza que deseja remover todas as estações e grupos?')) {
         saveState();
         stations = [];
+        groups = [];
+        activeGroupId = null;
         isochroneQueue = []; // discard any pending requests
+        overlapData = {};
+        jobsData = {};
         updateMap(); updateSidebar(); calculatePopulation(); renderGroups();
     }
 }
