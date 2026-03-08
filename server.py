@@ -11,6 +11,7 @@ import requests
 import csv
 import io
 import time
+import zipfile
 from dotenv import load_dotenv
 import math
 from shapely.geometry import Point, Polygon, shape
@@ -955,6 +956,139 @@ def import_points():
     
     except Exception as e:
         return jsonify({"error": f"Erro ao processar CSV: {str(e)}"}), 500
+
+
+@app.route('/api/import-gtfs', methods=['POST'])
+def import_gtfs():
+    """Parse GTFS ZIP and return grouped stops by dominant route, filtered to Évora bbox."""
+    file = request.files.get('file')
+    if not file:
+        return jsonify({"error": "Nenhum ficheiro enviado"}), 400
+
+    # Bounding box for Évora municipality
+    LAT_MIN, LAT_MAX = 38.4, 38.7
+    LON_MIN, LON_MAX = -8.1, -7.6
+
+    try:
+        content = file.read()
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            names = zf.namelist()
+
+            def read_gtfs_csv(fname):
+                for n in names:
+                    if n.endswith(fname):
+                        with zf.open(n) as f:
+                            text = f.read().decode('utf-8-sig')
+                        return list(csv.DictReader(io.StringIO(text)))
+                return []
+
+            routes_rows    = read_gtfs_csv('routes.txt')
+            trips_rows     = read_gtfs_csv('trips.txt')
+            stoptimes_rows = read_gtfs_csv('stop_times.txt')
+            stops_rows     = read_gtfs_csv('stops.txt')
+
+        if not (routes_rows and trips_rows and stoptimes_rows and stops_rows):
+            return jsonify({"error": "Ficheiro GTFS incompleto — routes/trips/stop_times/stops em falta"}), 400
+
+        # Build route_id → {name, color}
+        route_info = {}
+        for r in routes_rows:
+            rid = r.get('route_id', '').strip()
+            if not rid:
+                continue
+            name = (r.get('route_short_name') or r.get('route_long_name') or rid).strip()
+            raw_color = r.get('route_color', '').strip()
+            color = '#' + raw_color if raw_color and len(raw_color) == 6 else None
+            route_info[rid] = {'name': name, 'color': color}
+
+        # Map trip_id → route_id
+        trip_to_route = {}
+        for t in trips_rows:
+            tid = t.get('trip_id', '').strip()
+            rid = t.get('route_id', '').strip()
+            if tid and rid:
+                trip_to_route[tid] = rid
+
+        # Count trips per (stop_id, route_id) — cap rows to avoid memory issues
+        stop_route_counts = {}
+        MAX_ROWS = 500_000
+        for i, st in enumerate(stoptimes_rows):
+            if i >= MAX_ROWS:
+                break
+            sid = st.get('stop_id', '').strip()
+            tid = st.get('trip_id', '').strip()
+            rid = trip_to_route.get(tid)
+            if not sid or not rid:
+                continue
+            if sid not in stop_route_counts:
+                stop_route_counts[sid] = {}
+            stop_route_counts[sid][rid] = stop_route_counts[sid].get(rid, 0) + 1
+
+        # Primary route per stop = route with most trips through it
+        stop_primary_route = {
+            sid: max(counts, key=counts.get)
+            for sid, counts in stop_route_counts.items()
+        }
+
+        # Build stop_id → {name, lat, lon}
+        stops_dict = {}
+        for s in stops_rows:
+            sid = s.get('stop_id', '').strip()
+            try:
+                lat = float(s.get('stop_lat', 0))
+                lon = float(s.get('stop_lon', 0))
+            except (ValueError, TypeError):
+                continue
+            stops_dict[sid] = {
+                'name': (s.get('stop_name') or sid).strip(),
+                'lat': lat, 'lon': lon
+            }
+
+        # Group stops by primary route, applying bbox filter
+        route_stops = {}
+        skipped = 0
+        for sid, rid in stop_primary_route.items():
+            if sid not in stops_dict:
+                skipped += 1
+                continue
+            s = stops_dict[sid]
+            if not (LAT_MIN <= s['lat'] <= LAT_MAX and LON_MIN <= s['lon'] <= LON_MAX):
+                skipped += 1
+                continue
+            if rid not in route_stops:
+                route_stops[rid] = []
+            route_stops[rid].append({
+                'stop_id': sid,
+                'name':    s['name'],
+                'lat':     s['lat'],
+                'lng':     s['lon']
+            })
+
+        # Build response
+        result_routes = []
+        for rid, stop_list in route_stops.items():
+            info = route_info.get(rid, {'name': rid, 'color': None})
+            result_routes.append({
+                'route_id': rid,
+                'name':     info['name'],
+                'color':    info['color'],
+                'stops':    stop_list
+            })
+        result_routes.sort(key=lambda r: r['name'])
+
+        total_stops = sum(len(r['stops']) for r in result_routes)
+        return jsonify({
+            'routes':       result_routes,
+            'total_routes': len(result_routes),
+            'total_stops':  total_stops,
+            'skipped_stops': skipped
+        })
+
+    except zipfile.BadZipFile:
+        return jsonify({"error": "Ficheiro inválido — não é um ZIP GTFS válido"}), 400
+    except Exception as e:
+        return jsonify({"error": f"Erro ao processar GTFS: {str(e)}"}), 500
+
 
 if __name__ == '__main__':
     print("Carregando dados de censos...")

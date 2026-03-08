@@ -63,6 +63,11 @@ let pendingUrbanizationGeometry = null;
 let jobsData = {};            // { stationId: { jobs_total, jobs_breakdown, shannon_h, tod_classification, self_sufficiency, poi_count, low_coverage_warning, pois[] } }
 let jobsPOILayer = null;      // Leaflet layer group for POI circle markers
 let jobsPOIVisible = false;
+let overlapData = {};         // { stationId: [{ withId, withName, areaFraction, sharedPop }] }
+
+// -- Isochrone request queue (serialises ORS calls to avoid rate-limit) --
+let isochroneQueue = [];
+let isochroneQueueRunning = false;
 
 // -- Undo/Redo --
 let historyStack = [];
@@ -121,6 +126,8 @@ function initMap() {
     document.getElementById('btn-save-project').addEventListener('click', saveProject);
     document.getElementById('btn-load-project').addEventListener('click', () => document.getElementById('project-file-input').click());
     document.getElementById('project-file-input').addEventListener('change', loadProject);
+    document.getElementById('btn-import-gtfs').addEventListener('click', () => document.getElementById('gtfs-file-input').click());
+    document.getElementById('gtfs-file-input').addEventListener('change', importGTFS);
     document.getElementById('btn-add-group').addEventListener('click', () => {
         const name = `Grupo ${groups.length + 1}`;
         createGroup(name);
@@ -417,6 +424,7 @@ function clearAllStations() {
     if (confirm('Tem a certeza que deseja remover todas as estações?')) {
         saveState();
         stations = [];
+        isochroneQueue = []; // discard any pending requests
         updateMap(); updateSidebar(); calculatePopulation(); renderGroups();
     }
 }
@@ -535,7 +543,32 @@ function createStationMarker(station, color) {
 // ============================================================
 function initializeStationIsochrones(station) {
     if (hasValidCache(station) && areLayersOnMap(station.id)) return;
-    createIsochrones(station).then(() => calculatePopulation()).catch(() => calculatePopulation());
+    if (hasValidCache(station)) { drawCachedIsochrones(station, getGroupForStation(station).color); return; }
+    enqueueIsochrone(station);
+}
+
+function enqueueIsochrone(station) {
+    // Deduplicate: don't add if already queued or currently being created
+    if (station.creatingIsochrones) return;
+    if (isochroneQueue.some(s => s.id === station.id)) return;
+    isochroneQueue.push(station);
+    if (!isochroneQueueRunning) runIsochroneQueue();
+}
+
+async function runIsochroneQueue() {
+    if (isochroneQueueRunning) return;
+    isochroneQueueRunning = true;
+    while (isochroneQueue.length > 0) {
+        const station = isochroneQueue.shift();
+        // Skip if station was removed or already has a valid cache since it was enqueued
+        if (!stations.find(s => s.id === station.id)) continue;
+        if (hasValidCache(station)) continue;
+        await createIsochrones(station);
+        updateSidebar(); // progressive feedback
+        if (isochroneQueue.length > 0) await new Promise(r => setTimeout(r, 350));
+    }
+    isochroneQueueRunning = false;
+    calculatePopulation();
 }
 
 function drawCachedIsochrones(station, color) {
@@ -738,6 +771,7 @@ async function calculateJobs() {
     if (jobsPOIVisible) renderPOILayer();
     updateJobsSummary();
     updateSidebar();
+    computeOverlaps();
     // Refresh scenario ΔH now that jobsData is populated
     if (activeTab === 'scenario') updateScenarioSummary();
 }
@@ -809,6 +843,115 @@ function togglePOILayer() {
     const btn = document.getElementById('btn-toggle-pois');
     if (btn) btn.textContent = jobsPOIVisible ? '📍 Ocultar POIs' : '📍 Ver POIs no mapa';
     renderPOILayer();
+}
+
+// ============================================================
+//                  OVERLAP ANALYSIS
+// ============================================================
+function computeOverlaps() {
+    overlapData = {};
+    const valid = stations.filter(s =>
+        s.isochrones && Array.isArray(s.isochrones) && s.isochrones.length >= 1 && !s.isochroneError
+    );
+    if (valid.length < 2) { updateSidebar(); return; }
+
+    // Name lookup: id → display name
+    const nameOf = {};
+    stations.forEach((s, idx) => { nameOf[s.id] = s.name || ('Estação ' + (idx + 1)); });
+
+    for (let i = 0; i < valid.length; i++) {
+        for (let j = i + 1; j < valid.length; j++) {
+            const A = valid[i], B = valid[j];
+            try {
+                const intersection = turf.intersect(A.isochrones[0], B.isochrones[0]);
+                if (!intersection) continue;
+                const intersectArea = turf.area(intersection);
+                if (intersectArea <= 0) continue;
+                const areaA = turf.area(A.isochrones[0]);
+                const areaB = turf.area(B.isochrones[0]);
+                const fracA = areaA > 0 ? intersectArea / areaA : 0;
+                const fracB = areaB > 0 ? intersectArea / areaB : 0;
+                if (fracA >= 0.1) {
+                    if (!overlapData[String(A.id)]) overlapData[String(A.id)] = [];
+                    overlapData[String(A.id)].push({
+                        withId: B.id, withName: nameOf[B.id],
+                        areaFraction: fracA,
+                        sharedPop: Math.round((A.population_5min || 0) * fracA)
+                    });
+                }
+                if (fracB >= 0.1) {
+                    if (!overlapData[String(B.id)]) overlapData[String(B.id)] = [];
+                    overlapData[String(B.id)].push({
+                        withId: A.id, withName: nameOf[A.id],
+                        areaFraction: fracB,
+                        sharedPop: Math.round((B.population_5min || 0) * fracB)
+                    });
+                }
+            } catch (e) {
+                // Skip pairs with invalid geometries
+            }
+        }
+    }
+    updateSidebar();
+}
+
+async function importGTFS(event) {
+    const file = event.target.files[0];
+    event.target.value = '';
+    if (!file) return;
+
+    if (stations.length > 0) {
+        const ok = confirm(`Serão adicionadas paragens GTFS às ${stations.length} estação/ões existentes. Continuar?`);
+        if (!ok) return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    let data;
+    try {
+        const res = await fetch('/api/import-gtfs', { method: 'POST', body: formData });
+        data = await res.json();
+        if (!res.ok) { alert('Erro: ' + (data.error || 'Erro desconhecido')); return; }
+    } catch (e) {
+        alert('Erro de rede ao enviar ficheiro GTFS.');
+        return;
+    }
+
+    if (!data.routes || data.routes.length === 0) {
+        alert('Nenhuma linha com paragens encontrada dentro da área de Évora.');
+        return;
+    }
+
+    let addedStations = 0;
+    data.routes.forEach(route => {
+        const colorHex = route.color && /^#[0-9A-Fa-f]{6}$/.test(route.color)
+            ? route.color
+            : GROUP_COLORS[groups.length % GROUP_COLORS.length];
+        const groupId = Date.now() + Math.floor(Math.random() * 1e6);
+        groups.push({ id: groupId, name: route.name, color: colorHex, visible: true });
+        route.stops.forEach(stop => {
+            stations.push({
+                id: Date.now() + Math.floor(Math.random() * 1e6),
+                lat: stop.lat,
+                lng: stop.lng,
+                groupId,
+                name: stop.name
+            });
+            addedStations++;
+        });
+    });
+
+    if (!activeGroupId && groups.length > 0) activeGroupId = groups[0].id;
+    saveState();
+    renderGroups();
+    updateMap();     // enqueues isochrone fetches for all new stations (sequential, 350 ms apart)
+    updateSidebar();
+    // calculatePopulation() is intentionally NOT called here:
+    // runIsochroneQueue() calls it once after all isochrones are ready.
+
+    const skipNote = data.skipped_stops > 0 ? ` (${data.skipped_stops} fora da área ignoradas)` : '';
+    alert(`GTFS importado: ${data.total_routes} linha(s), ${addedStations} paragem(ns) adicionada(s).${skipNote}\n\nAs isócronas estão a ser calculadas em sequência — a população e empregos aparecerão progressivamente.`);
 }
 
 // ============================================================
@@ -903,10 +1046,19 @@ function updateSidebar() {
             `;
         }
 
+        const overlaps = overlapData[String(station.id)] || [];
+        const overlapBadgesHtml = overlaps.length === 0 ? '' : overlaps.map(ov => {
+            const pct = Math.round(ov.areaFraction * 100);
+            const cls = ov.areaFraction >= 0.4 ? 'danger' : 'warning';
+            const icon = cls === 'danger' ? '⛔' : '⚠️';
+            const popNote = ov.sharedPop > 0 ? ' · ' + formatNumber(ov.sharedPop) + ' hab' : '';
+            return `<div class="overlap-badge ${cls}">${icon} Sobreposição com ${escapeHtml(ov.withName)}: ${pct}% área${popNote}</div>`;
+        }).join('');
+
         return `
             <div class="station-item ${hasError ? 'station-error' : ''}">
                 <div class="station-item-header">
-                    <span class="station-name"><span class="station-group-dot" style="background:${group.color}"></span> Estação ${index + 1}${hasError ? ' ⚠️' : ''}</span>
+                    <span class="station-name"><span class="station-group-dot" style="background:${group.color}"></span> ${escapeHtml(station.name || ('Estação ' + (index + 1)))}${hasError ? ' ⚠️' : ''}</span>
                     <button class="btn-remove" onclick="removeStation(${station.id})" title="Remover">×</button>
                 </div>
                 ${hasError ? `<div style="background:#fed7d7;color:#c53030;padding:8px;border-radius:4px;margin-bottom:8px;font-size:12px;">⚠️ ${station.isochroneError}</div>` : ''}
@@ -916,6 +1068,7 @@ function updateSidebar() {
                     <div class="station-stat-row" style="border-top:2px solid #e2e8f0;margin-top:4px;padding-top:8px;font-weight:600;"><span class="station-stat-label">Total:</span><span class="station-stat-value">${formatNumber(popT)}</span></div>
                 </div>
                 ${jobsHtml}
+                ${overlapBadgesHtml}
             </div>
         `;
     }).join('');
@@ -1482,6 +1635,7 @@ function saveProject() {
         activeGroupId,
         stations: stations.map(s => ({
             id: s.id, lat: s.lat, lng: s.lng, groupId: s.groupId,
+            name: s.name || null,
             population_5min: s.population_5min || 0,
             population_10min: s.population_10min || 0,
             population_total: s.population_total || 0
@@ -1529,6 +1683,7 @@ async function loadProject(event) {
         // Restore stations (will trigger isochrone fetch)
         stations = project.stations.map(s => ({
             id: s.id, lat: s.lat, lng: s.lng, groupId: s.groupId,
+            name: s.name || null,
             population_5min: s.population_5min || 0,
             population_10min: s.population_10min || 0,
             population_total: s.population_total || 0
