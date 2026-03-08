@@ -1326,6 +1326,23 @@ html, body {
     background: #0e7490;
 }
 
+/* ==================== Export Report Button ==================== */
+.btn-export-report {
+    background: #553c9a;
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 6px 12px;
+    font-size: var(--font-xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+    white-space: nowrap;
+}
+.btn-export-report:hover {
+    background: #44337a;
+}
+
 /* ==================== Isochrone Overlap Badges ==================== */
 .overlap-badge {
     font-size: 11px;

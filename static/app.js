@@ -69,6 +69,9 @@ let overlapData = {};         // { stationId: [{ withId, withName, areaFraction,
 let isochroneQueue = [];
 let isochroneQueueRunning = false;
 
+// -- Global population totals (union-based, no cross-station double-counting) --
+let globalPopStats = { total_population: 0, total_population_5min: 0, total_population_10min: 0 };
+
 // -- Undo/Redo --
 let historyStack = [];
 let historyIndex = -1;
@@ -128,6 +131,7 @@ function initMap() {
     document.getElementById('project-file-input').addEventListener('change', loadProject);
     document.getElementById('btn-import-gtfs').addEventListener('click', () => document.getElementById('gtfs-file-input').click());
     document.getElementById('gtfs-file-input').addEventListener('change', importGTFS);
+    document.getElementById('btn-export-report').addEventListener('click', exportReport);
     document.getElementById('btn-add-group').addEventListener('click', () => {
         const name = `Grupo ${groups.length + 1}`;
         createGroup(name);
@@ -723,6 +727,7 @@ async function calculatePopulation() {
             return { ...station, population_5min: Number(station.population_5min) || 0, population_10min: Number(station.population_10min) || 0, population_total: Number(station.population_total) || 0 };
         });
 
+        globalPopStats = data;   // persist union-based totals for exportReport
         updateSidebarStats(data);
         updateSidebar();
 
@@ -791,8 +796,20 @@ function updateJobsSummary() {
         avgHEl.textContent = '—';
         return;
     }
-    const totalJobs = entries.reduce((s, e) => s + (e.jobs_total || 0), 0);
-    const avgH      = entries.reduce((s, e) => s + (e.shannon_h || 0), 0) / entries.length;
+
+    // De-duplicate POIs across all stations by osm_id to avoid cross-station double-counting
+    const seen = new Map();
+    entries.forEach(e => {
+        (e.pois || []).forEach(p => {
+            if (p.osm_id && !seen.has(p.osm_id)) seen.set(p.osm_id, p.jobs || 0);
+        });
+    });
+    // Fallback to naive sum only if no osm_id data (e.g. stale cache)
+    const totalJobs = seen.size > 0
+        ? Array.from(seen.values()).reduce((s, v) => s + v, 0)
+        : entries.reduce((s, e) => s + (e.jobs_total || 0), 0);
+
+    const avgH = entries.reduce((s, e) => s + (e.shannon_h || 0), 0) / entries.length;
     totalJobsEl.textContent = formatNumber(totalJobs);
     avgHEl.textContent      = avgH.toFixed(2);
 }
@@ -1776,6 +1793,264 @@ function escapeHtml(str) {
 // ============================================================
 //                       INIT
 // ============================================================
+//                     EXPORT REPORT (PDF via browser print)
+// ============================================================
+async function exportReport() {
+    if (stations.length === 0) {
+        alert('Não existem estações para incluir no relatório.');
+        return;
+    }
+
+    const btn = document.getElementById('btn-export-report');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '⏳ A gerar...';
+    btn.disabled = true;
+
+    // ── 1. Capturar mapa com html2canvas ──────────────────────
+    let mapImgSrc = null;
+    try {
+        const mapEl = document.getElementById('map');
+        const canvas = await html2canvas(mapEl, { useCORS: true, scale: 1.5, logging: false });
+        mapImgSrc = canvas.toDataURL('image/png');
+    } catch (e) {
+        console.warn('html2canvas falhou:', e);
+    }
+
+    btn.innerHTML = originalText;
+    btn.disabled = false;
+
+    // ── 2. Calcular totais globais ────────────────────────────
+    // Pop: use union-based server totals (no cross-station double-counting)
+    const totalPop5  = globalPopStats.total_population_5min  || stations.reduce((s, st) => s + (st.population_5min  || 0), 0);
+    const totalPop10 = globalPopStats.total_population_10min || stations.reduce((s, st) => s + (st.population_10min || 0), 0);
+    // Jobs: de-duplicate POIs by osm_id
+    const _seenJ = new Map();
+    Object.values(jobsData).forEach(e => {
+        (e.pois || []).forEach(p => { if (p.osm_id && !_seenJ.has(p.osm_id)) _seenJ.set(p.osm_id, p.jobs || 0); });
+    });
+    const totalJobsAll = _seenJ.size > 0
+        ? Array.from(_seenJ.values()).reduce((s, v) => s + v, 0)
+        : Object.values(jobsData).reduce((s, j) => s + (j.jobs_total || 0), 0);
+    const hValues = Object.values(jobsData).map(j => j.shannon_h).filter(h => h != null);
+    const avgH = hValues.length > 0 ? (hValues.reduce((a, b) => a + b, 0) / hValues.length) : null;
+
+    const scenarioActive = Object.keys(densityOverrides).length > 0 || newUrbanizations.length > 0;
+
+    // ── 3. Helpers ────────────────────────────────────────────
+    const fmt = n => (n == null ? '—' : Math.round(n).toLocaleString('pt-PT'));
+    const fmtF = n => (n == null ? '—' : n.toFixed(2));
+    const todColor = cls => ({
+        'TOD maduro': '#276749', 'Misto equilibrado': '#0e7490',
+        'Nó de emprego': '#3730a3', 'Misto desequilibrado': '#92400e',
+        'Dormitório': '#9b1c1c'
+    }[cls] || '#4a5568');
+    const todBg = cls => ({
+        'TOD maduro': '#f0fff4', 'Misto equilibrado': '#ecfeff',
+        'Nó de emprego': '#eef2ff', 'Misto desequilibrado': '#fffbeb',
+        'Dormitório': '#fff5f5'
+    }[cls] || '#f8fafc');
+
+    const now = new Date();
+    const dateStr = now.toLocaleDateString('pt-PT', { day: '2-digit', month: 'long', year: 'numeric' });
+    const timeStr = now.toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit' });
+
+    // ── 4. Construir HTML ─────────────────────────────────────
+    let html = `<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<title>Relatório TOD — Évora</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; font-size: 13px; color: #2d3748; background: #fff; padding: 32px; }
+  h1 { font-size: 22px; color: #2d3748; margin-bottom: 4px; }
+  h2 { font-size: 15px; color: #4a5568; font-weight: 600; margin: 28px 0 10px; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px; }
+  h3 { font-size: 13px; font-weight: 700; margin: 20px 0 8px; }
+  .subtitle { font-size: 12px; color: #718096; margin-bottom: 6px; }
+  .meta { font-size: 11px; color: #a0aec0; margin-top: 2px; }
+  .map-img { width: 100%; max-height: 420px; object-fit: cover; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 4px; }
+  .map-placeholder { background: #f8fafc; border: 1px dashed #cbd5e0; border-radius: 8px; height: 180px; display: flex; align-items: center; justify-content: center; color: #a0aec0; font-size: 12px; margin-bottom: 4px; }
+  .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 8px; }
+  .kpi { background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; padding: 12px 14px; }
+  .kpi-label { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; color: #718096; margin-bottom: 4px; }
+  .kpi-value { font-size: 20px; font-weight: 700; color: #2d3748; }
+  .kpi-sub { font-size: 10px; color: #a0aec0; margin-top: 2px; }
+  table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  th { background: #f8fafc; text-align: left; padding: 6px 8px; font-weight: 600; color: #4a5568; border-bottom: 2px solid #e2e8f0; white-space: nowrap; }
+  td { padding: 6px 8px; border-bottom: 1px solid #f0f4f8; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fafbff; }
+  .group-header { display: flex; align-items: center; gap: 8px; margin: 28px 0 10px; padding-bottom: 6px; border-bottom: 3px solid; }
+  .group-dot { width: 14px; height: 14px; border-radius: 50%; flex-shrink: 0; }
+  .group-title { font-size: 15px; font-weight: 700; color: #2d3748; }
+  .group-count { font-size: 11px; color: #718096; }
+  .badge-tod { display: inline-block; padding: 2px 7px; border-radius: 9999px; font-size: 10px; font-weight: 600; }
+  .tag-overlap { display: inline-block; background: #fffbeb; color: #92400e; border-left: 3px solid #ed8936; padding: 2px 6px; font-size: 10px; border-radius: 2px; white-space: nowrap; }
+  .tag-overlap.danger { background: #fff5f5; color: #9b1c1c; border-color: #e53e3e; }
+  .scenario-box { background: #fffbeb; border: 1px solid #f6ad55; border-radius: 8px; padding: 12px 16px; margin-bottom: 8px; }
+  .scenario-title { font-size: 12px; font-weight: 700; color: #92400e; margin-bottom: 8px; }
+  .tz-table { margin-top: 8px; }
+  .coords { font-family: monospace; font-size: 10px; color: #718096; }
+  .no-data { color: #a0aec0; font-style: italic; }
+  @media print {
+    body { padding: 16px; }
+    .map-img { max-height: 360px; }
+    .group-header { page-break-before: auto; }
+    table { page-break-inside: avoid; }
+    h2 { page-break-before: auto; }
+    .kpi { break-inside: avoid; }
+  }
+  @page { margin: 18mm 18mm 20mm; }
+</style>
+</head>
+<body>
+
+<!-- ===== CABEÇALHO ===== -->
+<h1>Relatório TOD — Mobilidade e Território</h1>
+<p class="subtitle">Évora — Desenvolvimento Orientado ao Transporte</p>
+<p class="meta">Gerado em ${dateStr} às ${timeStr} &nbsp;·&nbsp; ${groups.length} grupo${groups.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${stations.length} estação${stations.length !== 1 ? 'ões' : ''}</p>
+
+<!-- ===== MAPA ===== -->
+<h2>Mapa</h2>
+${mapImgSrc
+    ? `<img class="map-img" src="${mapImgSrc}" alt="Mapa das estações">`
+    : `<div class="map-placeholder">Imagem do mapa não disponível</div>`
+}
+
+<!-- ===== RESUMO GLOBAL ===== -->
+<h2>Resumo Global</h2>
+<div class="summary-grid">
+  <div class="kpi">
+    <div class="kpi-label">Pop. 5 min (total)</div>
+    <div class="kpi-value">${fmt(totalPop5)}</div>
+    <div class="kpi-sub">sem dupla contagem</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Pop. 10 min (total)</div>
+    <div class="kpi-value">${fmt(totalPop10)}</div>
+    <div class="kpi-sub">sem dupla contagem</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Empregos estimados</div>
+    <div class="kpi-value">${hValues.length > 0 ? fmt(totalJobsAll) : '—'}</div>
+    <div class="kpi-sub">área de 5 min (OSM)</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">H médio (mix de usos)</div>
+    <div class="kpi-value">${avgH != null ? fmtF(avgH) : '—'}</div>
+    <div class="kpi-sub">índice Shannon norm.</div>
+  </div>
+</div>`;
+
+    // ── Scenario section ─────────────────────────────────────
+    if (scenarioActive) {
+        const nOverrides = Object.keys(densityOverrides).length;
+        html += `
+<h2>Cenário Urbano</h2>
+<div class="scenario-box">
+  <div class="scenario-title">Alterações ao cenário base activas</div>`;
+
+        if (nOverrides > 0) {
+            html += `<p style="font-size:11px; color:#92400e; margin-bottom:8px;">${nOverrides} subsecção${nOverrides !== 1 ? 'ões' : ''} com densidade ajustada manualmente.</p>`;
+        }
+
+        if (newUrbanizations.length > 0) {
+            const densityLabels = { 1: 'Baixa', 2: 'Média-Baixa', 3: 'Média', 4: 'Média-Alta', 5: 'Alta' };
+            html += `<table class="tz-table">
+<thead><tr><th>Nome</th><th>Densidade</th><th>Cobertura (%)</th><th>Pop. estimada</th></tr></thead>
+<tbody>`;
+            newUrbanizations.forEach(u => {
+                html += `<tr>
+  <td>${u.name || 'Sem nome'}</td>
+  <td>${densityLabels[u.densityType] || u.densityType}</td>
+  <td>${Math.round((u.coverage || 0) * 100)}</td>
+  <td>${fmt(u.estimatedPop)}</td>
+</tr>`;
+            });
+            html += `</tbody></table>`;
+        }
+
+        html += `</div>`;
+    }
+
+    // ── Per-group sections ────────────────────────────────────
+    html += `<h2>Análise por Grupo</h2>`;
+
+    groups.forEach(group => {
+        const groupStations = stations.filter(s => s.groupId === group.id);
+        const grpPop5  = groupStations.reduce((s, st) => s + (st.population_5min  || 0), 0);
+        const grpPop10 = groupStations.reduce((s, st) => s + (st.population_10min || 0), 0);
+
+        html += `
+<div class="group-header" style="border-color:${group.color};">
+  <div class="group-dot" style="background:${group.color};"></div>
+  <span class="group-title">${group.name}</span>
+  <span class="group-count">${groupStations.length} estação${groupStations.length !== 1 ? 'ões' : ''} &nbsp;·&nbsp; ${fmt(grpPop5)} hab. (5 min) &nbsp;·&nbsp; ${fmt(grpPop10)} hab. (10 min)</span>
+</div>
+<table>
+<thead>
+  <tr>
+    <th>#</th>
+    <th>Nome</th>
+    <th>Coordenadas</th>
+    <th>Pop. 5 min</th>
+    <th>Pop. 10 min</th>
+    <th>Empregos</th>
+    <th>H (Shannon)</th>
+    <th>Classificação TOD</th>
+    <th>Autossuficiência</th>
+    <th>Sobreposições</th>
+  </tr>
+</thead>
+<tbody>`;
+
+        groupStations.forEach((station, idx) => {
+            const jd  = jobsData[station.id] || {};
+            const ovl = overlapData[station.id] || [];
+            const todCls = jd.tod_classification || null;
+
+            const overlapCells = ovl.map(o => {
+                const pct = Math.round((o.areaFraction || 0) * 100);
+                const cls = pct >= 40 ? 'danger' : '';
+                return `<span class="tag-overlap ${cls}">${o.withName || 'Estação'} ${pct}%</span>`;
+            }).join(' ');
+
+            html += `<tr>
+  <td>${idx + 1}</td>
+  <td style="font-weight:600;">${station.name || ('Estação ' + (stations.indexOf(station) + 1))}</td>
+  <td class="coords">${Number(station.lat).toFixed(5)}, ${Number(station.lng).toFixed(5)}</td>
+  <td>${fmt(station.population_5min)}</td>
+  <td>${fmt(station.population_10min)}</td>
+  <td>${jd.jobs_total != null ? fmt(jd.jobs_total) : '<span class="no-data">—</span>'}</td>
+  <td>${jd.shannon_h != null ? fmtF(jd.shannon_h) : '<span class="no-data">—</span>'}</td>
+  <td>${todCls ? `<span class="badge-tod" style="background:${todBg(todCls)};color:${todColor(todCls)};">${todCls}</span>` : '<span class="no-data">—</span>'}</td>
+  <td>${jd.self_sufficiency != null ? fmtF(jd.self_sufficiency) : '<span class="no-data">—</span>'}</td>
+  <td>${overlapCells || '<span class="no-data">nenhuma</span>'}</td>
+</tr>`;
+        });
+
+        html += `</tbody></table>`;
+    });
+
+    html += `
+</body>
+</html>`;
+
+    // ── 5. Abrir em novo tab e imprimir ───────────────────────
+    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    const tab  = window.open(url, '_blank');
+    if (tab) {
+        tab.addEventListener('load', () => {
+            setTimeout(() => { tab.print(); URL.revokeObjectURL(url); }, 400);
+        });
+    } else {
+        alert('O browser bloqueou a abertura do relatório. Autorize popups para este site.');
+        URL.revokeObjectURL(url);
+    }
+}
+
+// ============================================================
 document.addEventListener('DOMContentLoaded', function() {
     try { initMap(); console.log('App v2.0 inicializada'); } catch (e) { console.error('Erro init:', e); }
 });
@@ -1784,4 +2059,5 @@ document.addEventListener('DOMContentLoaded', function() {
 window.removeStation = removeStation;
 window.removeUrbanization = removeUrbanization;
 window.togglePOILayer = togglePOILayer;
+window.exportReport = exportReport;
 

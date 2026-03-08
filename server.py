@@ -675,14 +675,11 @@ def calculate_population():
                         pop_value = get_pop_for_row(row) * area_ratio
                         point_populations[point_id]['10min'] += pop_value
         
-        # Criar resultados finais
+        # Criar resultados finais (per-station Voronoi values — não acumular totais aqui)
         for point_data in point_info:
             point_id = point_data['id']
             pop_5min = point_populations[point_id]['5min']
             pop_10min = point_populations[point_id]['10min']
-            
-            total_pop_5min += pop_5min
-            total_pop_10min += pop_10min
             
             results.append({
                 "id": point_id,
@@ -692,6 +689,33 @@ def calculate_population():
                 "population_10min": round(pop_10min),
                 "population_total": round(pop_5min + pop_10min)
             })
+        
+        # Totais globais baseados na união das isócronas — evita dupla contagem entre grupos
+        # Área primária: interseção de cada BGRI com union_5min
+        for _, row in census_in_any_5min.iterrows():
+            if row.geometry.area > 0:
+                try:
+                    inter = row.geometry.intersection(union_5min)
+                    if not inter.is_empty:
+                        total_pop_5min += get_pop_for_row(row) * inter.area / row.geometry.area
+                except Exception:
+                    pass
+        
+        # Zona secundária: union_10min menos union_5min (exclui tudo o que já foi contado em 5min)
+        try:
+            secondary_zone = union_10min.difference(union_5min) if union_5min else union_10min
+        except Exception:
+            secondary_zone = union_10min
+        
+        if secondary_zone is not None and not getattr(secondary_zone, 'is_empty', True):
+            for _, row in census_in_any_10min.iterrows():
+                if row.geometry.area > 0:
+                    try:
+                        inter = row.geometry.intersection(secondary_zone)
+                        if not inter.is_empty and inter.area > 0:
+                            total_pop_10min += get_pop_for_row(row) * inter.area / row.geometry.area
+                    except Exception:
+                        pass
 
     # Add new urbanization populations — attribute to the nearest station's 5-min catchment
     for urb_feature in new_urbanization_features:
@@ -863,6 +887,7 @@ def jobs_in_isochrones():
             'category': category,
             'jobs':     int(jobs_val),
             'name':     tags.get('name', ''),
+            'osm_id':   f"{el_type}_{el.get('id', '')}",
         })
 
     # ── 5. Per-station aggregation ─────────────────────────────────────────
@@ -891,7 +916,7 @@ def jobs_in_isochrones():
 
         poi_list = [
             {'lat': p['lat'], 'lng': p['lon'], 'category': p['category'],
-             'name': p['name'], 'jobs': p['jobs']}
+             'name': p['name'], 'jobs': p['jobs'], 'osm_id': p['osm_id']}
             for p in station_pois
         ]
 
