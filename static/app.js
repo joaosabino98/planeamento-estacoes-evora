@@ -59,6 +59,11 @@ let drawnItems = null;
 let isDrawingUrbanization = false;
 let pendingUrbanizationGeometry = null;
 
+// -- Jobs / Mix de Usos --
+let jobsData = {};            // { stationId: { jobs_total, jobs_breakdown, shannon_h, tod_classification, self_sufficiency, poi_count, low_coverage_warning, pois[] } }
+let jobsPOILayer = null;      // Leaflet layer group for POI circle markers
+let jobsPOIVisible = false;
+
 // -- Undo/Redo --
 let historyStack = [];
 let historyIndex = -1;
@@ -683,12 +688,127 @@ async function calculatePopulation() {
 
         updateSidebarStats(data);
         updateSidebar();
+
+        // Calculate jobs after population is known (non-blocking)
+        calculateJobs();
     } catch (error) {
         console.error('Erro ao calcular população:', error);
         stations = stations.map(s => ({ ...s, population_5min: Number(s.population_5min) || 0, population_10min: Number(s.population_10min) || 0, population_total: Number(s.population_total) || 0 }));
         updateSidebarStats({ total_population: 0, total_population_5min: 0, total_population_10min: 0, points: stations.map(s => ({ id: s.id, population_5min: s.population_5min || 0, population_10min: s.population_10min || 0, population_total: s.population_total || 0 })) });
         updateSidebar();
     }
+}
+
+// ============================================================
+//               JOBS / MIX DE USOS
+// ============================================================
+async function calculateJobs() {
+    if (stations.length === 0) {
+        jobsData = {};
+        updateJobsSummary();
+        updateSidebar();
+        return;
+    }
+
+    const payload = {
+        stations: stations.map(s => ({
+            id: s.id,
+            lat: s.lat,
+            lng: s.lng,
+            isochrones: (s.isochrones && !s.isochroneError && Array.isArray(s.isochrones) && s.isochrones.length >= 2)
+                ? s.isochrones : null,
+            population_5min: s.population_5min || 0,
+        }))
+    };
+
+    try {
+        const resp = await fetch('/api/jobs-in-isochrones', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        jobsData = {};
+        (data.stations || []).forEach(s => { jobsData[String(s.id)] = s; });
+    } catch (e) {
+        console.error('Erro ao calcular empregos:', e);
+    }
+
+    if (jobsPOIVisible) renderPOILayer();
+    updateJobsSummary();
+    updateSidebar();
+    // Refresh scenario ΔH now that jobsData is populated
+    if (activeTab === 'scenario') updateScenarioSummary();
+}
+
+function updateJobsSummary() {
+    const totalJobsEl = document.getElementById('total-jobs');
+    const avgHEl      = document.getElementById('avg-shannon-h');
+    if (!totalJobsEl || !avgHEl) return;
+
+    const entries = Object.values(jobsData);
+    if (entries.length === 0) {
+        totalJobsEl.textContent = '—';
+        avgHEl.textContent = '—';
+        return;
+    }
+    const totalJobs = entries.reduce((s, e) => s + (e.jobs_total || 0), 0);
+    const avgH      = entries.reduce((s, e) => s + (e.shannon_h || 0), 0) / entries.length;
+    totalJobsEl.textContent = formatNumber(totalJobs);
+    avgHEl.textContent      = avgH.toFixed(2);
+}
+
+function renderPOILayer() {
+    if (jobsPOILayer) { map.removeLayer(jobsPOILayer); jobsPOILayer = null; }
+    if (!jobsPOIVisible) return;
+
+    const CAT_COLORS = {
+        commerce:         '#ed8936',
+        services:         '#3182ce',
+        education_health: '#38a169',
+        culture_leisure:  '#9f7aea',
+        industry:         '#718096',
+    };
+    const CAT_LABELS = {
+        commerce:         'Comércio / Restauração',
+        services:         'Serviços / Escritórios',
+        education_health: 'Educação / Saúde',
+        culture_leisure:  'Cultura / Lazer',
+        industry:         'Indústria / Logística',
+    };
+
+    const group = L.layerGroup();
+    Object.values(jobsData).forEach(sd => {
+        (sd.pois || []).forEach(poi => {
+            const col = CAT_COLORS[poi.category] || '#a0aec0';
+            const m = L.circleMarker([poi.lat, poi.lng], {
+                radius: 5,
+                fillColor: col,
+                color: '#fff',
+                weight: 1,
+                fillOpacity: 0.85,
+            });
+            const label = CAT_LABELS[poi.category] || poi.category;
+            m.bindPopup(
+                `<div style="min-width:140px;">`+
+                `<strong>${poi.name || '(sem nome)'}</strong><br>`+
+                `<span style="color:${col};font-weight:600;">${label}</span><br>`+
+                `<small>~${poi.jobs} emprego${poi.jobs !== 1 ? 's' : ''} estimado${poi.jobs !== 1 ? 's' : ''}</small>`+
+                `</div>`
+            );
+            group.addLayer(m);
+        });
+    });
+    jobsPOILayer = group;
+    map.addLayer(jobsPOILayer);
+}
+
+function togglePOILayer() {
+    jobsPOIVisible = !jobsPOIVisible;
+    const btn = document.getElementById('btn-toggle-pois');
+    if (btn) btn.textContent = jobsPOIVisible ? '📍 Ocultar POIs' : '📍 Ver POIs no mapa';
+    renderPOILayer();
 }
 
 // ============================================================
@@ -732,12 +852,57 @@ function updateSidebar() {
         return;
     }
 
+    const CAT_LABELS = {
+        commerce:         'Comércio',
+        services:         'Serviços',
+        education_health: 'Educação / Saúde',
+        culture_leisure:  'Cultura / Lazer',
+        industry:         'Indústria',
+    };
+
     container.innerHTML = stations.map((station, index) => {
         const group = getGroupForStation(station);
         const pop5 = station.population_5min || 0;
         const pop10 = station.population_10min || 0;
         const popT = station.population_total || 0;
         const hasError = station.isochroneError;
+
+        const jd = jobsData[String(station.id)];
+        let jobsHtml = '';
+        if (jd) {
+            const hPct    = Math.round((jd.shannon_h || 0) * 100);
+            const hColor  = jd.shannon_h >= 0.6 ? '#38a169' : jd.shannon_h >= 0.3 ? '#d69e2e' : '#e53e3e';
+            const ssColor = jd.self_sufficiency >= 0.4 ? '#38a169' : jd.self_sufficiency >= 0.2 ? '#d69e2e' : '#e53e3e';
+            const breakdown = Object.entries(jd.jobs_breakdown || {})
+                .filter(([, v]) => v > 0)
+                .sort(([, a], [, b]) => b - a)
+                .map(([k, v]) =>
+                    `<div class="station-stat-row"><span class="station-stat-label">&nbsp;↳ ${CAT_LABELS[k] || k}:</span><span class="station-stat-value">${formatNumber(v)}</span></div>`
+                ).join('');
+            const warning = jd.low_coverage_warning
+                ? `<div class="jobs-warning">⚠️ Cobertura OSM limitada — estimativa indicativa (${jd.poi_count} POIs)</div>` : '';
+            jobsHtml = `
+                <div class="station-jobs-section">
+                    <div class="station-jobs-header">Empregos estimados (5 min)</div>
+                    ${warning}
+                    <div class="station-stat-row">
+                        <span class="station-stat-label">Total empregos:</span>
+                        <span class="station-stat-value">${formatNumber(jd.jobs_total)}</span>
+                    </div>
+                    ${breakdown}
+                    <div class="station-stat-row" style="margin-top:6px;">
+                        <span class="station-stat-label">Mix de usos (H):</span>
+                        <span class="station-stat-value" style="color:${hColor};font-weight:700;">${jd.shannon_h.toFixed(2)} <span style="font-size:10px;font-weight:400;">(${jd.tod_classification})</span></span>
+                    </div>
+                    <div class="h-bar-bg"><div class="h-bar-fill" style="width:${hPct}%;background:${hColor};"></div></div>
+                    <div class="station-stat-row">
+                        <span class="station-stat-label">Auto-suficiência:</span>
+                        <span class="station-stat-value" style="color:${ssColor};font-weight:700;">${jd.self_sufficiency.toFixed(2)}</span>
+                    </div>
+                </div>
+            `;
+        }
+
         return `
             <div class="station-item ${hasError ? 'station-error' : ''}">
                 <div class="station-item-header">
@@ -750,6 +915,7 @@ function updateSidebar() {
                     <div class="station-stat-row"><span class="station-stat-label">Área Secundária (10 min):</span><span class="station-stat-value">${formatNumber(pop10)}</span></div>
                     <div class="station-stat-row" style="border-top:2px solid #e2e8f0;margin-top:4px;padding-top:8px;font-weight:600;"><span class="station-stat-label">Total:</span><span class="station-stat-value">${formatNumber(popT)}</span></div>
                 </div>
+                ${jobsHtml}
             </div>
         `;
     }).join('');
@@ -1115,13 +1281,17 @@ function renameUrbanization(urbId, newName) {
 //              SCENARIO SUMMARY & RECALCULATE
 // ============================================================
 function updateScenarioSummary() {
+    const deltaHEl = document.getElementById('scenario-delta-h');
+
     if (!censusGeoJSON) {
         document.getElementById('scenario-base-pop').textContent = '—';
         document.getElementById('scenario-proj-pop').textContent = '—';
         document.getElementById('scenario-delta').textContent = '—';
+        if (deltaHEl) { deltaHEl.textContent = '—'; deltaHEl.style.color = '#718096'; }
         return;
     }
 
+    // ── Population delta ──────────────────────────────────────────────────
     let basePop = 0;
     let projPop = 0;
 
@@ -1130,12 +1300,10 @@ function updateScenarioSummary() {
         const bgriId = props.BGRI2021 || props.SUBSECCAO || props.OBJECTID;
         const pop = props.N_INDIVIDUOS || 0;
         basePop += pop;
-
         const override = densityOverrides[bgriId];
         projPop += override ? override.populationOverride : pop;
     });
 
-    // Add urbanization estimated pop
     const urbPop = newUrbanizations.reduce((s, u) => s + u.estimatedPop, 0);
     projPop += urbPop;
 
@@ -1146,6 +1314,120 @@ function updateScenarioSummary() {
     document.getElementById('scenario-proj-pop').textContent = formatNumber(projPop);
     document.getElementById('scenario-delta').textContent = `${sign}${formatNumber(delta)}`;
     document.getElementById('scenario-delta').style.color = delta >= 0 ? '#38a169' : '#e53e3e';
+
+    // ── Δ H (Shannon mix-of-uses index) ───────────────────────────────────
+    // Jobs/ha estimated for activity-generating density types
+    const DENSITY_JOBS = {
+        1: { jobs_ha: 20, category: 'services' },  // industrial/serviços
+        6: { jobs_ha: 15, category: 'commerce' },  // uso misto
+    };
+
+    // Step 1: aggregate current H baseline from jobsData
+    const entries = Object.values(jobsData);
+    const hasJobsData = entries.length > 0;
+
+    let baseResidents   = hasJobsData ? entries.reduce((s, e) => s + (e.jobs_breakdown ? 0 : 0) + 0, 0) : 0;
+    let baseBreakdown   = { commerce: 0, services: 0, education_health: 0, culture_leisure: 0, industry: 0 };
+    let baseTotalJobs   = 0;
+    let baseResidentSum = 0;
+
+    if (hasJobsData) {
+        entries.forEach(e => {
+            baseResidentSum += (e.jobs_breakdown ? 0 : 0); // placeholder — residents come from station pop
+            Object.keys(baseBreakdown).forEach(k => {
+                baseBreakdown[k] += (e.jobs_breakdown || {})[k] || 0;
+            });
+        });
+        baseTotalJobs = Object.values(baseBreakdown).reduce((s, v) => s + v, 0);
+        baseResidentSum = stations.reduce((s, st) => s + (st.population_5min || 0), 0);
+    }
+
+    // Step 2: extra jobs introduced by density overrides (BGRI changes)
+    let overrideJobs = { commerce: 0, services: 0, education_health: 0, culture_leisure: 0, industry: 0 };
+    let overrideResidentDelta = 0;
+
+    if (censusGeoJSON) {
+        censusGeoJSON.features.forEach(f => {
+            const props = f.properties;
+            const bgriId = props.BGRI2021 || props.SUBSECCAO || props.OBJECTID;
+            const override = densityOverrides[bgriId];
+            if (!override) return;
+
+            const area_ha = (props.SHAPE_Area || 0) / 10000;
+            const coverage = (override.coverage || 40) / 100;
+            const djSpec = DENSITY_JOBS[override.densityType];
+            if (djSpec) {
+                overrideJobs[djSpec.category] += djSpec.jobs_ha * area_ha * coverage;
+            }
+            // Resident delta vs original BGRI population
+            const origPop = props.N_INDIVIDUOS || 0;
+            overrideResidentDelta += (override.populationOverride - origPop);
+        });
+    }
+
+    // Step 3: extra jobs from new urbanizations
+    let urbJobs = { commerce: 0, services: 0, education_health: 0, culture_leisure: 0, industry: 0 };
+    newUrbanizations.forEach(u => {
+        const djSpec = DENSITY_JOBS[u.densityType];
+        if (!djSpec) return;
+        const area_ha = turf.area({ type: 'Feature', geometry: u.geometry, properties: {} }) / 10000;
+        const coverage = (u.coverage || 40) / 100;
+        urbJobs[djSpec.category] += djSpec.jobs_ha * area_ha * coverage;
+    });
+
+    // Step 4: compute base H and projected H
+    if (!hasJobsData && Object.values(overrideJobs).every(v => v === 0) && Object.values(urbJobs).every(v => v === 0)) {
+        // No data at all — tell user why
+        if (deltaHEl) {
+            deltaHEl.textContent = '— (adicione estações primeiro)';
+            deltaHEl.style.color = '#718096';
+        }
+        return;
+    }
+
+    function shannonH(residents, breakdown) {
+        const cats = {
+            residents:        Math.max(0, residents),
+            commerce:         Math.max(0, breakdown.commerce || 0),
+            services:         Math.max(0, breakdown.services || 0),
+            education_health: Math.max(0, breakdown.education_health || 0),
+            culture_leisure:  Math.max(0, breakdown.culture_leisure || 0),
+            industry:         Math.max(0, breakdown.industry || 0),
+        };
+        const total = Object.values(cats).reduce((s, v) => s + v, 0);
+        if (total === 0) return 0;
+        const nPos = Object.values(cats).filter(v => v > 0).length;
+        if (nPos < 2) return 0;
+        let h = 0;
+        Object.values(cats).forEach(v => { if (v > 0) { const p = v / total; h -= p * Math.log(p); } });
+        return h / Math.log(nPos);
+    }
+
+    const currentH = hasJobsData ? shannonH(baseResidentSum, baseBreakdown) : 0;
+
+    const projBreakdown = {};
+    Object.keys(baseBreakdown).forEach(k => {
+        projBreakdown[k] = baseBreakdown[k] + (overrideJobs[k] || 0) + (urbJobs[k] || 0);
+    });
+    const projResidents = Math.max(0, baseResidentSum + overrideResidentDelta + urbPop);
+    const projH = shannonH(projResidents, projBreakdown);
+
+    const deltaH = projH - currentH;
+
+    if (deltaHEl) {
+        if (!hasJobsData) {
+            // Overrides/urbanizations exist but no station jobs data yet
+            const totalNewJobs = [...Object.values(overrideJobs), ...Object.values(urbJobs)].reduce((s, v) => s + v, 0);
+            deltaHEl.textContent = totalNewJobs > 0
+                ? `~+${Math.round(totalNewJobs)} empregos não-residenciais estimados (calcule com estações para H completo)`
+                : '— (adicione estações para calcular H)';
+            deltaHEl.style.color = '#718096';
+        } else {
+            const dSign = deltaH >= 0 ? '+' : '';
+            deltaHEl.textContent = `${dSign}${deltaH.toFixed(3)}  (base: ${currentH.toFixed(2)} → proj: ${projH.toFixed(2)})`;
+            deltaHEl.style.color = deltaH > 0.005 ? '#38a169' : deltaH < -0.005 ? '#e53e3e' : '#718096';
+        }
+    }
 }
 
 async function recalculateCatchment() {
@@ -1333,4 +1615,5 @@ document.addEventListener('DOMContentLoaded', function() {
 // Global exports
 window.removeStation = removeStation;
 window.removeUrbanization = removeUrbanization;
+window.togglePOILayer = togglePOILayer;
 

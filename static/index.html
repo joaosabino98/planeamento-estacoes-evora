@@ -64,6 +64,29 @@
                                 </span>
                             </div>
                         </div>
+
+                        <!-- Jobs & Mix Summary -->
+                        <div class="stat-card jobs-summary-card">
+                            <div class="stat-label">Empregos e Mix de Usos (5 min)</div>
+                            <div class="jobs-global-row">
+                                <div class="jobs-global-item">
+                                    <span class="jobs-global-label">Empregos estimados</span>
+                                    <span class="jobs-global-value" id="total-jobs">—</span>
+                                </div>
+                                <div class="jobs-global-item">
+                                    <span class="jobs-global-label">H médio (mix)</span>
+                                    <span class="jobs-global-value" id="avg-shannon-h">—</span>
+                                </div>
+                            </div>
+                            <button class="btn-toggle-pois" id="btn-toggle-pois" onclick="togglePOILayer()">📍 Ver POIs no mapa</button>
+                            <div class="jobs-legend">
+                                <span class="jobs-legend-item"><span class="jobs-dot" style="background:#ed8936"></span>Comércio</span>
+                                <span class="jobs-legend-item"><span class="jobs-dot" style="background:#3182ce"></span>Serviços</span>
+                                <span class="jobs-legend-item"><span class="jobs-dot" style="background:#38a169"></span>Educ./Saúde</span>
+                                <span class="jobs-legend-item"><span class="jobs-dot" style="background:#9f7aea"></span>Cultura</span>
+                                <span class="jobs-legend-item"><span class="jobs-dot" style="background:#718096"></span>Indústria</span>
+                            </div>
+                        </div>
                         
                         <div class="stations-list" id="stations-list">
                             <h3>Estações</h3>
@@ -105,6 +128,10 @@
                             <div class="scenario-stat-row">
                                 <span class="stat-label">Diferença</span>
                                 <span class="stat-value-sm" id="scenario-delta">—</span>
+                            </div>
+                            <div class="scenario-stat-row" id="scenario-h-row" style="border-top:1px solid #e2e8f0;margin-top:6px;padding-top:6px;">
+                                <span class="stat-label" title="Variação do índice H de mix de usos após aplicar o cenário urbano">Δ Mix de usos (H)</span>
+                                <span class="stat-value-sm" id="scenario-delta-h">—</span>
                             </div>
                         </div>
                         <button class="btn-recalc" id="btn-recalc">Recalcular Catchment</button>

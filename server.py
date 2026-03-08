@@ -12,11 +12,176 @@ import csv
 import io
 import time
 from dotenv import load_dotenv
-from shapely.geometry import Point, shape
+import math
+from shapely.geometry import Point, Polygon, shape
 from shapely.ops import unary_union
 
 # Carregar variáveis de ambiente do ficheiro .env
 load_dotenv()
+
+# ==================== Job Coefficients (OSM → employment estimate) ====================
+# Values based on INE SCIE 2021 averages for Portuguese municipalities of Évora's size.
+# Format: osm_tag_key → { tag_value: (category, jobs_per_establishment) }
+# Special jobs value '__area__' means compute from polygon area × jobs/ha rate.
+JOBS_PER_HA = {
+    'industrial': 20,   # light industry / logistics
+    'commercial': 40,   # offices + retail mix
+    'retail':     40,   # retail parks
+}
+
+def classify_poi_tags(el_type, tags):
+    """Return (category, jobs) or (None, None) if not relevant.
+    category ∈ {'commerce', 'services', 'education_health', 'culture_leisure', 'industry'}
+    jobs is an integer, or '__area__' for landuse polygons (area-based calculation).
+    """
+    shop = tags.get('shop')
+    if shop:
+        if shop in ('supermarket', 'hypermarket'):
+            return ('commerce', 25)
+        if shop in ('mall', 'department_store'):
+            return ('commerce', 80)
+        if shop in ('convenience', 'bakery', 'butcher', 'greengrocer', 'fishmonger', 'deli'):
+            return ('commerce', 3)
+        if shop in ('clothes', 'shoes', 'sports', 'books', 'gift', 'jewelry', 'florist', 'optician'):
+            return ('commerce', 5)
+        if shop in ('furniture', 'bed', 'kitchen', 'carpet'):
+            return ('commerce', 8)
+        if shop in ('car', 'car_repair', 'motorcycle', 'bicycle'):
+            return ('commerce', 10)
+        if shop in ('hardware', 'doityourself', 'garden'):
+            return ('commerce', 6)
+        if shop in ('electronics', 'computer', 'mobile_phone'):
+            return ('commerce', 8)
+        return ('commerce', 4)   # generic retail
+
+    amenity = tags.get('amenity')
+    if amenity:
+        if amenity == 'restaurant':
+            return ('commerce', 8)
+        if amenity in ('cafe', 'bar', 'pub', 'biergarten'):
+            return ('commerce', 3)
+        if amenity == 'fast_food':
+            return ('commerce', 6)
+        if amenity == 'food_court':
+            return ('commerce', 20)
+        if amenity == 'bank':
+            return ('services', 8)
+        if amenity == 'post_office':
+            return ('services', 15)
+        if amenity == 'police':
+            return ('services', 25)
+        if amenity == 'fire_station':
+            return ('services', 15)
+        if amenity == 'hospital':
+            return ('education_health', 200)
+        if amenity in ('clinic', 'doctors'):
+            return ('education_health', 8)
+        if amenity == 'dentist':
+            return ('education_health', 4)
+        if amenity == 'pharmacy':
+            return ('education_health', 5)
+        if amenity == 'veterinary':
+            return ('education_health', 3)
+        if amenity in ('school', 'language_school'):
+            return ('education_health', 25)
+        if amenity == 'kindergarten':
+            return ('education_health', 8)
+        if amenity == 'university':
+            return ('education_health', 150)
+        if amenity == 'college':
+            return ('education_health', 60)
+        if amenity in ('theatre', 'arts_centre'):
+            return ('culture_leisure', 15)
+        if amenity == 'cinema':
+            return ('culture_leisure', 12)
+        if amenity == 'library':
+            return ('culture_leisure', 8)
+        if amenity == 'museum':
+            return ('culture_leisure', 12)
+        if amenity == 'nightclub':
+            return ('commerce', 8)
+        if amenity in ('fuel', 'car_wash'):
+            return ('services', 5)
+
+    office = tags.get('office')
+    if office:
+        if office in ('government', 'administrative'):
+            return ('services', 20)
+        if office in ('lawyer', 'accountant', 'insurance', 'financial', 'tax_advisor'):
+            return ('services', 6)
+        return ('services', 8)
+
+    tourism = tags.get('tourism')
+    if tourism == 'hotel':
+        return ('commerce', 20)
+    if tourism in ('hostel', 'motel', 'apartment'):
+        return ('commerce', 8)
+    if tourism == 'guest_house':
+        return ('commerce', 4)
+
+    leisure = tags.get('leisure')
+    if leisure in ('sports_centre', 'fitness_centre', 'stadium'):
+        return ('culture_leisure', 15)
+    if leisure in ('swimming_pool', 'golf_course'):
+        return ('culture_leisure', 10)
+
+    # Landuse polygons (area-based) — only meaningful for way/relation
+    if el_type == 'way':
+        landuse = tags.get('landuse')
+        if landuse == 'industrial':
+            return ('industry', '__area__')
+        if landuse in ('commercial', 'retail'):
+            return ('commerce', '__area__')
+
+    return (None, None)
+
+
+def compute_shannon_h(residents, breakdown):
+    """Compute normalised Shannon entropy H for land-use mix.
+    residents: int — population in isochrone
+    breakdown: dict with keys commerce, services, education_health, culture_leisure, industry
+    Returns (h_norm [0..1], tod_classification string)
+    """
+    cats = {
+        'residents':        max(0, residents),
+        'commerce':         max(0, breakdown.get('commerce', 0)),
+        'services':         max(0, breakdown.get('services', 0)),
+        'education_health': max(0, breakdown.get('education_health', 0)),
+        'culture_leisure':  max(0, breakdown.get('culture_leisure', 0)),
+        'industry':         max(0, breakdown.get('industry', 0)),
+    }
+    total = sum(cats.values())
+    if total == 0:
+        return (0.0, 'Sem dados')
+
+    n_positive = sum(1 for v in cats.values() if v > 0)
+    if n_positive < 2:
+        return (0.0, 'Mono-funcional')
+
+    h = 0.0
+    for v in cats.values():
+        if v > 0:
+            p = v / total
+            h -= p * math.log(p)
+
+    h_max = math.log(n_positive)
+    h_norm = h / h_max if h_max > 0 else 0.0
+
+    # TOD classification
+    jobs_total = sum(v for k, v in cats.items() if k != 'residents')
+    ratio = jobs_total / residents if residents > 0 else 0
+    if h_norm >= 0.6:
+        classification = 'TOD maduro'
+    elif h_norm >= 0.4 and ratio >= 0.2:
+        classification = 'Misto equilibrado'
+    elif ratio >= 0.5:
+        classification = 'Nó de emprego'
+    elif h_norm >= 0.3:
+        classification = 'Misto desequilibrado'
+    else:
+        classification = 'Dormitório'
+
+    return (round(h_norm, 3), classification)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
 CORS(app)
@@ -519,6 +684,186 @@ def calculate_population():
         "total_population": round(total_pop_5min + total_pop_10min),
         "points": results
     })
+
+@app.route('/api/jobs-in-isochrones', methods=['POST'])
+def jobs_in_isochrones():
+    """Estima empregos e índice de mix de usos (H) por isócrona via dados OSM (Overpass API)."""
+    data = request.json
+    stations_data = data.get('stations', [])
+
+    if not stations_data:
+        return jsonify({'stations': []})
+
+    # ── 1. Build per-station isochrone geometries (WGS84) ──────────────────
+    radius_5min_deg  = 417  / 111000   # fallback circle in degrees
+    radius_10min_deg = 833  / 111000
+
+    station_geoms = []
+    all_geoms = []
+
+    for s in stations_data:
+        lat, lng = s['lat'], s['lng']
+        isochrones = s.get('isochrones')
+        try:
+            if isochrones and len(isochrones) >= 1:
+                geom_5 = shape(isochrones[0]['geometry'])
+            else:
+                geom_5 = Point(lng, lat).buffer(radius_5min_deg)
+        except Exception:
+            geom_5 = Point(lng, lat).buffer(radius_5min_deg)
+
+        station_geoms.append({
+            'id':          s['id'],
+            'lat':         lat,
+            'lng':         lng,
+            'geom_5':      geom_5,
+            'pop_5min':    s.get('population_5min', 0),
+        })
+        all_geoms.append(geom_5)
+
+    # ── 2. Bounding box for Overpass query ─────────────────────────────────
+    union_all = unary_union(all_geoms)
+    minx, miny, maxx, maxy = union_all.bounds   # lon_min, lat_min, lon_max, lat_max
+    # Overpass bbox: south,west,north,east
+    bbox_str = f"{miny:.6f},{minx:.6f},{maxy:.6f},{maxx:.6f}"
+
+    amenity_rx = (
+        "restaurant|cafe|bar|pub|biergarten|fast_food|food_court|nightclub|fuel|car_wash|"
+        "bank|post_office|police|fire_station|hospital|clinic|doctors|dentist|pharmacy|"
+        "veterinary|school|language_school|kindergarten|university|college|"
+        "theatre|arts_centre|cinema|library|museum"
+    )
+    tourism_rx  = "hotel|hostel|motel|apartment|guest_house"
+    leisure_rx  = "sports_centre|fitness_centre|stadium|swimming_pool|golf_course"
+    landuse_rx  = "industrial|commercial|retail"
+
+    overpass_query = (
+        f'[out:json][timeout:30];\n'
+        f'(\n'
+        f'  node["shop"]({bbox_str});\n'
+        f'  node["amenity"~"{amenity_rx}"]({bbox_str});\n'
+        f'  node["office"]({bbox_str});\n'
+        f'  node["tourism"~"{tourism_rx}"]({bbox_str});\n'
+        f'  node["leisure"~"{leisure_rx}"]({bbox_str});\n'
+        f'  way["shop"]({bbox_str});\n'
+        f'  way["amenity"~"{amenity_rx}"]({bbox_str});\n'
+        f'  way["office"]({bbox_str});\n'
+        f'  way["tourism"~"{tourism_rx}"]({bbox_str});\n'
+        f'  way["leisure"~"{leisure_rx}"]({bbox_str});\n'
+        f'  way["landuse"~"{landuse_rx}"]({bbox_str});\n'
+        f');\n'
+        f'out body geom;'
+    )
+
+    # ── 3. Overpass API call ───────────────────────────────────────────────
+    elements = []
+    try:
+        overpass_url = "https://overpass-api.de/api/interpreter"
+        resp = requests.post(overpass_url, data={'data': overpass_query}, timeout=35)
+        resp.raise_for_status()
+        elements = resp.json().get('elements', [])
+        print(f"Overpass returned {len(elements)} elements for bbox {bbox_str}")
+    except Exception as e:
+        print(f"Overpass API error: {e}")
+
+    # ── 4. Parse elements into POI list ────────────────────────────────────
+    pois = []
+    for el in elements:
+        tags = el.get('tags', {})
+        el_type = el.get('type', 'node')
+
+        # Coordinates
+        if el_type == 'node':
+            lon_el = el.get('lon')
+            lat_el = el.get('lat')
+        else:
+            # way: use centroid of geometry array if present, else skip
+            geom_pts = el.get('geometry', [])
+            if not geom_pts:
+                continue
+            lon_el = sum(p['lon'] for p in geom_pts) / len(geom_pts)
+            lat_el = sum(p['lat'] for p in geom_pts) / len(geom_pts)
+
+        if lon_el is None or lat_el is None:
+            continue
+
+        category, jobs_val = classify_poi_tags(el_type, tags)
+        if category is None:
+            continue
+
+        # Area-based computation for landuse polygons
+        if jobs_val == '__area__':
+            geom_pts = el.get('geometry', [])
+            if len(geom_pts) >= 3:
+                try:
+                    coords = [(p['lon'], p['lat']) for p in geom_pts]
+                    poly = Polygon(coords)
+                    # Approximate area in m² via metric projection
+                    gdf_poly = gpd.GeoDataFrame([1], geometry=[poly], crs='EPSG:4326')
+                    gdf_metric = gdf_poly.to_crs('EPSG:3857')
+                    area_m2 = gdf_metric.geometry.iloc[0].area
+                    area_ha = area_m2 / 10000
+                    landuse = tags.get('landuse', 'industrial')
+                    jpha = JOBS_PER_HA.get(landuse, 20)
+                    jobs_val = max(1, round(area_ha * jpha))
+                except Exception:
+                    jobs_val = 20   # fallback
+            else:
+                jobs_val = 20
+
+        pois.append({
+            'point':    Point(lon_el, lat_el),
+            'lon':      lon_el,
+            'lat':      lat_el,
+            'category': category,
+            'jobs':     int(jobs_val),
+            'name':     tags.get('name', ''),
+        })
+
+    # ── 5. Per-station aggregation ─────────────────────────────────────────
+    results = []
+    CATEGORIES = ['commerce', 'services', 'education_health', 'culture_leisure', 'industry']
+
+    for sg in station_geoms:
+        geom = sg['geom_5']
+        station_pois = [p for p in pois if geom.contains(p['point'])]
+
+        breakdown = {c: 0 for c in CATEGORIES}
+        for p in station_pois:
+            cat = p['category']
+            if cat in breakdown:
+                breakdown[cat] += p['jobs']
+
+        jobs_total = sum(breakdown.values())
+        poi_count  = len(station_pois)
+        residents  = sg['pop_5min'] or 0
+
+        h_norm, classification = compute_shannon_h(residents, breakdown)
+
+        # Self-sufficiency index: jobs / active population proxy
+        active_pop = residents * 0.45   # ~45% of residents are economically active (Évora 2021)
+        self_sufficiency = round(jobs_total / active_pop, 3) if active_pop > 0 else 0.0
+
+        poi_list = [
+            {'lat': p['lat'], 'lng': p['lon'], 'category': p['category'],
+             'name': p['name'], 'jobs': p['jobs']}
+            for p in station_pois
+        ]
+
+        results.append({
+            'id':                   sg['id'],
+            'jobs_total':           jobs_total,
+            'jobs_breakdown':       {k: round(v) for k, v in breakdown.items()},
+            'shannon_h':            h_norm,
+            'tod_classification':   classification,
+            'self_sufficiency':     self_sufficiency,
+            'poi_count':            poi_count,
+            'low_coverage_warning': poi_count < 5,
+            'pois':                 poi_list,
+        })
+
+    return jsonify({'stations': results})
+
 
 @app.route('/api/export-points', methods=['POST'])
 def export_points():

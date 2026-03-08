@@ -1005,3 +1005,134 @@ html, body {
     }
 }
 
+/* ==================== Jobs / Mix de Usos ==================== */
+.jobs-summary-card {
+    margin-bottom: 16px;
+    background: #f7fafc;
+}
+
+.jobs-global-row {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 10px;
+}
+
+.jobs-global-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.jobs-global-label {
+    font-size: 11px;
+    color: #718096;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.jobs-global-value {
+    font-size: 18px;
+    font-weight: 700;
+    color: #2d3748;
+}
+
+.btn-toggle-pois {
+    width: 100%;
+    padding: 6px 10px;
+    background: #ebf4ff;
+    color: #2b6cb0;
+    border: 1px solid #bee3f8;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-bottom: 8px;
+    transition: background 0.15s;
+}
+
+.btn-toggle-pois:hover {
+    background: #bee3f8;
+}
+
+.jobs-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.jobs-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    color: #4a5568;
+}
+
+.jobs-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+/* Per-station jobs section */
+.station-jobs-section {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 2px dashed #e2e8f0;
+}
+
+.station-jobs-header {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #4a5568;
+    margin-bottom: 6px;
+}
+
+.jobs-warning {
+    background: #fffbeb;
+    color: #744210;
+    border: 1px solid #f6e05e;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+    margin-bottom: 6px;
+}
+
+/* H (Shannon) progress bar */
+.h-bar-bg {
+    height: 5px;
+    background: #e2e8f0;
+    border-radius: 3px;
+    margin: 4px 0 6px;
+    overflow: hidden;
+}
+
+.h-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.4s ease;
+}
+
+/* Scenario ΔH row */
+#scenario-h-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+}
+
+#scenario-h-row .stat-label {
+    font-size: 12px;
+    cursor: help;
+    text-decoration: underline dotted #718096;
+}
+
+#scenario-delta-h {
+    font-size: 11px;
+    font-weight: 600;
+    word-break: break-word;
+    line-height: 1.4;
+}
