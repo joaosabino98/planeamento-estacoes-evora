@@ -1536,3 +1536,81 @@ html, body {
     color: #9b1c1c;
     border-left-color: var(--c-red);
 }
+/* ============================================================
+   Uncovered BGRIs section (Scenario tab)
+   ============================================================ */
+.uncov-section {
+    margin-top: var(--sp-5);
+    padding-top: var(--sp-5);
+    border-top: 1px solid var(--c-border);
+}
+
+.uncov-description {
+    font-size: 11px;
+    color: var(--c-text-muted, #a0aec0);
+    line-height: 1.55;
+    margin-bottom: 10px;
+}
+
+.uncov-summary {
+    font-size: 11px;
+    color: var(--c-text-secondary);
+    margin-bottom: 8px;
+    line-height: 1.5;
+}
+
+.uncov-list-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm, 6px);
+    border: 1px solid var(--c-border);
+    margin-bottom: 6px;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    font-size: 12px;
+    user-select: none;
+}
+
+.uncov-list-item:hover {
+    background: var(--c-primary-bg);
+    border-color: var(--c-primary-border);
+}
+
+.uncov-list-item.active {
+    border-color: #c05621;
+    background: #fffaf0;
+}
+
+.uncov-rank {
+    font-weight: 700;
+    color: var(--c-text-muted, #a0aec0);
+    min-width: 16px;
+    font-size: 11px;
+    flex-shrink: 0;
+    text-align: right;
+}
+
+.uncov-id {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--c-text-secondary);
+    font-size: 11px;
+    font-family: var(--font-mono, monospace);
+}
+
+.uncov-area {
+    color: var(--c-text-muted, #a0aec0);
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.uncov-pop {
+    font-weight: 600;
+    color: var(--c-text-primary);
+    flex-shrink: 0;
+    font-size: 12px;
+}

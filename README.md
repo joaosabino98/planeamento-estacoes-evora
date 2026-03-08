@@ -34,6 +34,7 @@ Ferramenta web interativa para avaliar a cobertura pedonal de redes de transport
 - As novas urbanizações **substituem** a população das BGRI que cobrem (sem dupla contagem)
 - Resumo do cenário: população base (censos) vs. projetada vs. delta
 - Recalcular catchment com as alterações do cenário ativas
+- **Zonas com menor cobertura de paragens**: secção no fundo do tab com a lista de subsecções (BGRI) com ≥ 50 hab. não cobertas por qualquer isócrona de 10 min; clique numa zona para a destacar no mapa (laranja) e centrar a vista; clique novamente para desselecionar
 
 ### Gestão de projetos
 
@@ -60,8 +61,9 @@ Ferramenta web interativa para avaliar a cobertura pedonal de redes de transport
 
 ### Carregamento com indicador de progresso
 
-- Ao importar um ficheiro GTFS ou carregar um projeto JSON, um **overlay de carregamento** cobre o painel «Estações» enquanto as isócronas são calculadas e a população contabilizada
-- O overlay mostra o progresso (`A calcular isócronas… X / N`) e o estado final (`A calcular população e empregos…`), desaparecendo apenas quando todos os cálculos terminam
+- Ao importar um ficheiro GTFS ou carregar um projeto JSON, um **overlay de carregamento** cobre o painel «Estações» e bloqueia o scroll enquanto as isócronas são calculadas e a população e empregos contabilizados
+- O overlay mostra três fases sequenciais: `A calcular isócronas… X / N` → `A calcular população…` → `A calcular empregos…`, desaparecendo apenas quando todos os cálculos terminam
+- Se o cálculo de empregos falhar, o overlay apresenta um **estado de erro** com ícone ⚠️, mensagem descritiva, botão × para fechar e botão **Tentar novamente** que re-executa o pedido
 - Isócronas servidas a partir da cache local não introduzem atraso entre pedidos (apenas chamadas reais à API ORS têm o intervalo de 350 ms)
 
 ## Como usar o mix de usos para localizar estações

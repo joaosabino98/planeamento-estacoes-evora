@@ -131,7 +131,9 @@ densityOverrides{}        // { bgriId: { densityType, coverage, populationOverri
 newUrbanizations[]        // [{ id, name, geometry (GeoJSON), densityType, coverage,
                           //    diffuse, estimatedPop, layers: [polygonLayer, labelMarker] }]
 urbanizationLayers[]      // flat list of all urbanisation Leaflet layers
-selectedCensusFeature     // { feature, layer } | null
+selectedCensusFeature     // { feature, layer } | null  — BGRI being edited in the floating panel
+selectedUncoveredLayer    // Leaflet layer | null  — BGRI highlighted as uncovered (orange)
+selectedUncoveredBgriId   // string | null  — id of the highlighted uncovered BGRI
 
 // Undo/redo
 historyStack[]            // serialised snapshots (max 50)
@@ -162,9 +164,13 @@ historyIndex
 | `importGTFS(event)` | Parses GTFS zip; creates groups + stations; **shows loading overlay** until isochrones + population done |
 | `captureMapToImage(opts)` | **New helper.** Creates a hidden off-screen `<div>`, spins up a second Leaflet map, adds OSM tiles + optional isochrone outlines + station circle markers + numbered dot markers, waits for tiles (up to 2500ms), captures with `html2canvas`, destroys container. Returns `dataURL\|null`. Opts: `{bounds, width, height, stationMarkers[], isochroneFeatures[], labelledDots[]}`. Does NOT touch the live map. |
 | `exportReport()` | (1) Calls `captureMapToImage` for overview map (1120×630, station markers + 10-min isochrone outlines, group colours). (2) If `uncoveredList.length > 0`, calls `captureMapToImage` for uncovered map (900×506, numbered red dots at BGRI centroids). Both captures happen **before** HTML building. (3) Builds HTML with: 4-KPI summary, 2-KPI city coverage, scenario section, per-group tables, "Zonas com menor cobertura de paragens" section with map image + table (numbered dots match table rows). |
-| `showStationsLoading(msg)` | Shows `#stations-loading-overlay` over the Estações tab with a spinner and message |
-| `updateStationsLoadingMessage(msg)` | Updates the overlay message text (used for progress: `X / N`) |
-| `hideStationsLoading()` | Hides the loading overlay; called after `calculatePopulation()` in `runIsochroneQueue()` |
+| `showStationsLoading(msg)` | Shows `#stations-loading-overlay` over the Estações tab; scrolls tab to top; locks overflow to prevent user scrolling past the overlay |
+| `updateStationsLoadingMessage(msg)` | Updates the overlay message text (used for progress: `X / N`, then "A calcular população…", then "A calcular empregos…") |
+| `showStationsLoadingError(msg)` | Switches the overlay to error state: hides spinner, shows ⚠️ + message + × close button + "Tentar novamente" button; retry re-runs `calculateJobs()` |
+| `hideStationsLoading()` | Hides the loading overlay; restores tab overflow; called after successful jobs calculation in `runIsochroneQueue()` |
+| `renderUncoveredBgris()` | Renders the `#uncov-list` in the Scenario tab from `globalPopStats.uncovered_bgris`; wires click handlers to `toggleUncoveredBgri()` |
+| `clearUncoveredHighlight()` | Restores the choropleth style on `selectedUncoveredLayer`; resets `selectedUncoveredBgriId`; removes `.active` class from list items |
+| `toggleUncoveredBgri(bgri, el)` | Highlights the BGRI layer in orange (`#dd6b20`, weight 3); calls `map.flyTo()` to centroid at zoom ≥ 15; clicking the active item calls `clearUncoveredHighlight()` |
 | `saveState()` / `undo()` / `redo()` | History stack management |
 | `getCensusStyle(feature)` | Choropleth style; checks `densityOverrides` first |
 
@@ -287,6 +293,8 @@ Classificação de perfil funcional resultante (função `compute_shannon_h` em 
 | ≥ 0.30 | qualquer | Misto desequilibrado |
 | < 0.30 | < 0.50 | Dormitório |
 
+> **Nota de implementação:** quando `residents = 0` e `jobs_total > 0`, o rácio é definido como `1.0` (não `0`) — garantindo que estações puramente de emprego (ex. parques industriais) são classificadas como "Nó de emprego" e não "Dormitório".
+
 ### Endpoint `/api/jobs-in-isochrones`
 
 **Método:** `POST`  
@@ -327,7 +335,7 @@ Classificação de perfil funcional resultante (função `compute_shannon_h` em 
 3. Para cada elemento, chama `classify_poi_tags()` — ignora elementos sem categoria.
 4. Filtra por point-in-polygon com `shapely.geometry.shape(isochrone).contains(Point(lng, lat))`.
 5. Agrega por categoria; calcula Shannon H com `compute_shannon_h()`.
-6. Calcula `self_sufficiency = jobs_total / (jobs_total + residents_5min)` (usa população da request se fornecida).
+6. Calcula `self_sufficiency = jobs_total / (active_pop)` onde `active_pop = residents_5min × 0.45`; quando `residents = 0` e `jobs > 0`, devolve `1.0` (não `0.0`).
 
 ### Estado frontend (`app.js`)
 
@@ -342,15 +350,15 @@ let overlapData = {};      // { stationId: [{ withId, withName, areaFraction, sh
 
 | Função | O que faz |
 |---|---|
-| `calculateJobs()` | Async; chama `/api/jobs-in-isochrones`; popula `jobsData`; chama `updateJobsSummary()` + `updateSidebar()` + `computeOverlaps()` + `updateScenarioSummary()` se no tab de cenário |
+| `calculateJobs()` | Async; chama `/api/jobs-in-isochrones`; popula `jobsData`; chama `updateJobsSummary()` + `updateSidebar()` + `computeOverlaps()` + `updateScenarioSummary()` se no tab de cenário; **devolve `true` em caso de sucesso, `false` em caso de erro** |
 | `updateJobsSummary()` | Atualiza `#total-jobs` e `#avg-shannon-h` no painel global; chama `updateCoverageCard()` |
 | `computeOverlaps()` | Usa Turf.js `intersect`+`area` para todos os pares de isócronas de 5 min; popula `overlapData`; limiar de reporte ≥ 10%; chama `updateSidebar()` |
 | `importGTFS(event)` | Async; lê `.zip`; POST `/api/import-gtfs`; limpa estado existente; cria grupos+estações; chama `updateMap()` que enfileira isócronas |
 | `enqueueIsochrone(station)` | Adiciona estação a `isochroneQueue` (deduplicado); inicia `runIsochroneQueue()` se parado |
-| `runIsochroneQueue()` | Loop assíncrono: processa uma estação de cada vez com 350 ms de intervalo; chama `calculatePopulation()` quando fila esvazia |
+| `runIsochroneQueue()` | Loop assíncrono: processa uma estação de cada vez com 350 ms de intervalo; quando a fila esvazia, chama `calculatePopulation(false)` (fase "A calcular população…"), depois `calculateJobs()` (fase "A calcular empregos…"); em caso de sucesso chama `hideStationsLoading()`, em falha chama `showStationsLoadingError()` |
 | `renderPOILayer()` | Cria `L.circleMarker` por POI, com cor por categoria e popup com nome + categoria + empregos estimados |
 | `togglePOILayer()` | Exportada como `window.togglePOILayer`; alterna visibilidade de `jobsPOILayer` no mapa |
-| `calculatePopulation()` *(mod.)* | Chama `calculateJobs()` de forma não-bloqueante após atualizar a sidebar |
+| `calculatePopulation(triggerJobs=true)` *(mod.)* | Aceita parâmetro `triggerJobs` (default `true`); quando `false`, não dispara `calculateJobs()` automaticamente — usado pelo queue runner que gere a sequência manualmente; sempre chama `renderUncoveredBgris()` após actualizar a sidebar |
 | `updateSidebar()` *(mod.)* | Cada cartão de estação inclui agora uma secção `.station-jobs-section` com total de empregos, breakdown por categoria, barra de progresso H e perfil funcional |
 | `updateScenarioSummary()` *(reescrito)* | Calcula ΔH usando helper local `shannonH()`; estima empregos adicionais a partir de área × `JOBS_PER_HA` para overrides de BGRI e novas urbanizações; mostra fallback quando `jobsData` está vazio |
 
@@ -372,7 +380,7 @@ const POI_COLORS = {
 - A Overpass API tem rate limits; pedidos muito frequentes podem receber HTTP 429. A aplicação não implementa retry automático — o utilizador deve recalcular manualmente.
 - Empregos em `landuse=commercial/industrial` (polígonos) são estimativas baseadas em área × coeficiente; podem sobrestimar grandes parques industriais pouco densos.
 - O índice H é calculado com base em POIs presentes no OSM — zonas com mapeamento OSM incompleto produzirão valores de H subestimados (`low_coverage_warning: true` quando `poi_count < 10`).
-- `self_sufficiency` usa a população da última chamada a `/api/population-in-isochrones`; se não houver dados de população, fica em `null`.
+- `self_sufficiency` usa a população da última chamada a `/api/population-in-isochrones`; quando `residents = 0` e `jobs > 0`, o valor devolvido é `1.0`.
 
 ---
 
@@ -494,14 +502,16 @@ color: var(--c-text-muted);
 | Urbanisation label marker | Always at `urb.layers[1]`. Use `labelMarker.setIcon(L.divIcon({className:'', iconSize:null, …}))` to rename — do not remove/re-add unless necessary. |
 | BGRI ID resolution order | `props.BGRI2021` → `props.SUBSECCAO` → `props.OBJECTID`. Used consistently in both frontend and backend. |
 | Population dedup | When isochrones from different stations overlap, population is attributed to the station whose centroid is closest to the overlap centroid. |
-| Isochrone queue | `initializeStationIsochrones()` enfileira em `isochroneQueue[]` em vez de disparar diretamente. `runIsochroneQueue()` processa uma a uma com 350 ms de intervalo **apenas para chamadas reais ao ORS** (cache hits não introduzem atraso); chama `calculatePopulation()` quando termina; depois chama `hideStationsLoading()`. Não chamar `calculatePopulation()` fora deste fluxo quando existem estações sem isócrona. |
+| Isochrone queue | `initializeStationIsochrones()` enfileira em `isochroneQueue[]` em vez de disparar diretamente. `runIsochroneQueue()` processa uma a uma com 350 ms de intervalo **apenas para chamadas reais ao ORS** (cache hits não introduzem atraso); sequência pós-fila: `calculatePopulation(false)` → `calculateJobs()` → `hideStationsLoading()` ou `showStationsLoadingError()`. Não chamar `calculatePopulation()` fora deste fluxo quando existem estações sem isócrona. O parâmetro `triggerJobs=false` em `calculatePopulation()` evita que o runner dispare `calculateJobs()` em duplicado. |
 | Fallback não é cacheado | Apenas resultados reais do ORS são guardados em `data/isochrone_cache.json`. O fallback circular **nunca** deve ser persistido em cache — se for guardado, pedidos subsequentes receberão círculos em vez das isócronas reais. |
 | Population dedup (global) | Os totais globais de população usam a união das isócronas no servidor (`union_5min`, `union_10min`), eliminando dupla contagem entre estações com áreas sobrepostas. Os valores por estação continuam a usar Voronoi. `globalPopStats` (frontend) guarda os totais da última resposta do servidor; `exportReport()` usa-os para os KPIs globais. |
 | Jobs dedup (global) | `updateJobsSummary()` e `exportReport()` des-duplicam POIs por `osm_id` usando um `Map` antes de somar empregos. Cada POI no endpoint `/api/jobs-in-isochrones` inclui `osm_id` no formato `"{type}_{osm_id}"`. Quando não há `osm_id`, cai back para soma naive. |
 | City coverage | `CITY_TOTAL_JOBS=23674` (constante CME). `cityTotalPop` (53 577) carregado em `initMap()` via `fetch('/api/census-metadata')`. Coverage card no sidebar mostra % de pop e empregos da cidade cobertos pela rede actual. Relatório inclui linha adicional de 2 KPIs de cobertura + "Zonas com menor cobertura de paragens" (mapa 900×506 com pontos numerados + tabela BGRI, pop ≥ 50, top 30). |
 | Map capture | `captureMapToImage` cria um `<div>` off-screen, instancia um Leaflet separado, adiciona OSM + camadas, aguarda tiles (máx 2500ms), captura com html2canvas, destrói o container. **Não perturba o mapa activo** (sem resize, sem esconder camadas, sem invalidateSize). Usar sempre este helper para qualquer captura de mapa em relativos. |
-| Loading overlay | Ao iniciar `importGTFS()` ou `loadProject()`, `showStationsLoading()` é chamado antes de `updateMap()`; `hideStationsLoading()` é chamado no final de `runIsochroneQueue()` após `calculatePopulation()`. O overlay é um `position:absolute` dentro de `#tab-stations`; sem efeito quando não há isocronas a calcular (estações singulares não activam o overlay). |
+| Loading overlay | Ao iniciar `importGTFS()` ou `loadProject()`, `showStationsLoading()` é chamado antes de `updateMap()`; a sequência no runner é: isócronas → `calculatePopulation(false)` → `calculateJobs()` → `hideStationsLoading()` (ou `showStationsLoadingError()` se falhar). O overlay bloqueia scroll em `#tab-stations` via `tabEl.style.overflow='hidden'` e volta a restaurá-lo ao esconder. `showStationsLoadingError()` mostra estado de erro com botão "Tentar novamente" que re-executa apenas `calculateJobs()`. O overlay é um `position:absolute` dentro de `#tab-stations`; sem efeito quando não há isócronas a calcular (estações singulares não activam o overlay). |
 | GTFS substitui, não adiciona | `importGTFS()` limpa `stations`, `groups`, `activeGroupId`, `isochroneQueue`, `overlapData` e `jobsData` antes de importar. Chama `saveState()` previamente para suportar undo. |
+| Uncovered BGRIs no Cenário | `renderUncoveredBgris()` é chamada em `calculatePopulation()` (após sidebar update) e em `recalculateCatchment()`. `toggleUncoveredBgri()` aplica estilo laranja (`#dd6b20`, weight 3) e `map.flyTo()` ao centróide; segundo clique chama `clearUncoveredHighlight()`. `clearUncoveredHighlight()` é chamada no início de `selectCensusFeature()` (evita conflito de estilos) e em `removeCensusLayer()` (limpeza ao sair do tab). Apenas uma BGRI pode estar destacada de cada vez via `selectedUncoveredBgriId`. |
+| Shannon H / self_sufficiency com residents=0 | Em `compute_shannon_h()` (server.py): `ratio = 1.0` quando `residents=0` e `jobs_total>0` (em vez de `0.0`) — evita classificação incorrecta como "Dormitório". Em `self_sufficiency` (call site): devolve `1.0` quando `active_pop=0` e `jobs_total>0` (em vez de `0.0`). Não reverter. |
 | name em stations | O campo `name` nas estações é `null` para paragens manuais; contém o nome da paragem GTFS quando importado. É serializado no JSON do projeto e restaurado no load. |
 
 ---

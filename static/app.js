@@ -60,6 +60,8 @@ let densityOverrides = {};       // { bgriId: { densityType: <int>, populationOv
 let newUrbanizations = [];       // [{ id, name, geometry, densityType, coverage, diffuse, estimatedPop, layers[] }]
 let urbanizationLayers = [];     // all Leaflet layers for urbanizations
 let selectedCensusFeature = null;
+let selectedUncoveredLayer  = null;  // Leaflet layer currently highlighted as uncovered BGRI
+let selectedUncoveredBgriId = null;  // id of the highlighted uncovered BGRI
 let drawControl = null;
 let drawnItems = null;
 let isDrawingUrbanization = false;
@@ -818,6 +820,7 @@ async function calculatePopulation(triggerJobs = true) {
         globalPopStats = data;   // persist union-based totals for exportReport
         updateSidebarStats(data);
         updateSidebar();
+        renderUncoveredBgris();
 
         // Calculate jobs after population is known (non-blocking, unless suppressed)
         if (triggerJobs) calculateJobs();
@@ -1277,6 +1280,7 @@ async function loadCensusLayer() {
 }
 
 function removeCensusLayer() {
+    clearUncoveredHighlight();
     if (censusLayer) { map.removeLayer(censusLayer); censusLayer = null; }
 }
 
@@ -1307,6 +1311,8 @@ function getCensusStyle(feature) {
 }
 
 function selectCensusFeature(feature, layer) {
+    // Deselect any uncovered BGRI highlight so styles don't conflict
+    clearUncoveredHighlight();
     // Restore style of previously selected layer before switching
     if (selectedCensusFeature && selectedCensusFeature.layer !== layer) {
         selectedCensusFeature.layer.setStyle(getCensusStyle(selectedCensusFeature.feature));
@@ -1756,7 +1762,87 @@ function updateScenarioSummary() {
 async function recalculateCatchment() {
     await calculatePopulation();
     updateScenarioSummary();
+    renderUncoveredBgris();
     alert('Catchment recalculado com as alterações do cenário!');
+}
+
+// ============================================================
+//        UNCOVERED BGRIs — scenario tab list + map highlight
+// ============================================================
+function renderUncoveredBgris() {
+    const container = document.getElementById('uncov-list');
+    if (!container) return;
+    const list = (globalPopStats && globalPopStats.uncovered_bgris) || [];
+
+    if (list.length === 0) {
+        const hasIsochrones = stations.some(s => s.isochrones && !s.isochroneError);
+        container.innerHTML = `<p class="no-stations">${hasIsochrones ? 'Sem zonas não cobertas — boa cobertura de rede!' : 'Calcule as isócronas para ver as zonas.'}</p>`;
+        return;
+    }
+
+    const totalPop = list.reduce((s, b) => s + b.population, 0);
+    let html = `<p class="uncov-summary">${list.length} zona${list.length !== 1 ? 's' : ''} · <strong>${formatNumber(totalPop)}</strong> hab. não cobertos</p>`;
+
+    html += list.map((b, i) => {
+        const active = b.id === selectedUncoveredBgriId ? ' active' : '';
+        const areaStr = b.area_ha != null ? `<span class="uncov-area">${b.area_ha.toFixed(1)} ha</span>` : '';
+        return `<div class="uncov-list-item${active}" data-idx="${i}">
+            <span class="uncov-rank">${i + 1}</span>
+            <span class="uncov-id" title="${escapeHtml(b.id)}">${escapeHtml(b.id)}</span>
+            ${areaStr}
+            <span class="uncov-pop">${formatNumber(b.population)} hab.</span>
+        </div>`;
+    }).join('');
+
+    container.innerHTML = html;
+
+    container.querySelectorAll('.uncov-list-item').forEach((el, i) => {
+        el.addEventListener('click', () => toggleUncoveredBgri(list[i], el));
+    });
+}
+
+function clearUncoveredHighlight() {
+    if (selectedUncoveredLayer) {
+        try {
+            if (selectedUncoveredLayer.feature) {
+                selectedUncoveredLayer.setStyle(getCensusStyle(selectedUncoveredLayer.feature));
+            }
+        } catch {}
+        selectedUncoveredLayer = null;
+    }
+    selectedUncoveredBgriId = null;
+    document.querySelectorAll('.uncov-list-item').forEach(el => el.classList.remove('active'));
+}
+
+function toggleUncoveredBgri(bgri, itemEl) {
+    // Clicking the already-active one → deselect
+    if (selectedUncoveredBgriId === bgri.id) {
+        clearUncoveredHighlight();
+        return;
+    }
+
+    clearUncoveredHighlight();
+    selectedUncoveredBgriId = bgri.id;
+    if (itemEl) itemEl.classList.add('active');
+
+    // Find and highlight the Leaflet layer on the census choropleth
+    if (censusLayer) {
+        censusLayer.eachLayer(layer => {
+            const props = layer.feature && layer.feature.properties;
+            if (!props) return;
+            const fid = String(props.BGRI2021 || props.SUBSECCAO || props.OBJECTID || '');
+            if (fid === bgri.id) {
+                layer.setStyle({ color: '#c05621', weight: 3, dashArray: null, fillColor: '#dd6b20', fillOpacity: 0.45 });
+                layer.bringToFront();
+                selectedUncoveredLayer = layer;
+            }
+        });
+    }
+
+    // Pan/zoom to the zone centroid
+    if (map && bgri.lat && bgri.lng) {
+        map.flyTo([bgri.lat, bgri.lng], Math.max(map.getZoom(), 15), { duration: 0.7 });
+    }
 }
 
 function resetScenario() {
