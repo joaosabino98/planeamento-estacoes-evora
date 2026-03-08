@@ -26,11 +26,21 @@
             
             <!-- ============ TAB: ESTAÇÕES ============ -->
             <div class="tab-content active" id="tab-stations">
-                <!-- Loading overlay shown during JSON/GTFS import until population is calculated -->
+                <!-- Loading overlay shown during JSON/GTFS import until population/jobs are calculated -->
                 <div id="stations-loading-overlay" class="stations-loading-overlay">
                     <div class="stations-loading-box">
-                        <div class="stations-loading-spinner"></div>
-                        <p class="stations-loading-msg" id="stations-loading-msg">A calcular isócronas…</p>
+                        <!-- Estado: a carregar -->
+                        <div id="stations-loading-state">
+                            <div class="stations-loading-spinner"></div>
+                            <p class="stations-loading-msg" id="stations-loading-msg">A calcular isócronas…</p>
+                        </div>
+                        <!-- Estado: erro -->
+                        <div id="stations-error-state" class="hidden">
+                            <button class="stations-error-close" id="stations-error-close" title="Fechar">×</button>
+                            <div class="stations-error-icon">⚠️</div>
+                            <p class="stations-error-msg" id="stations-error-msg">Erro ao calcular empregos.</p>
+                            <button class="btn-retry" id="stations-retry-btn">Tentar novamente</button>
+                        </div>
                     </div>
                 </div>
                 <div class="sidebar-content">

@@ -174,9 +174,10 @@ html, body {
     backdrop-filter: blur(3px);
     -webkit-backdrop-filter: blur(3px);
     z-index: 200;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     flex-direction: column;
+    padding-top: 48px;
 }
 
 .stations-loading-overlay.visible {
@@ -184,6 +185,7 @@ html, body {
 }
 
 .stations-loading-box {
+    position: relative;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -193,8 +195,17 @@ html, body {
     border-radius: 12px;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.13);
     border: 1px solid var(--c-border);
-    max-width: 260px;
+    width: 240px;
     text-align: center;
+    align-self: center;
+}
+
+#stations-loading-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    width: 100%;
 }
 
 .stations-loading-spinner {
@@ -217,6 +228,73 @@ html, body {
     color: var(--c-text-secondary);
     line-height: 1.55;
     margin: 0;
+}
+
+/* Error state */
+#stations-error-state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+}
+
+#stations-error-state.hidden {
+    display: none;
+}
+
+#stations-loading-state.hidden {
+    display: none;
+}
+
+.stations-error-close {
+    position: absolute;
+    top: 8px;
+    right: 10px;
+    background: none;
+    border: none;
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--c-text-muted, #a0aec0);
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+
+.stations-error-close:hover {
+    color: var(--c-danger, #e53e3e);
+    background: #fff5f5;
+}
+
+.stations-error-icon {
+    font-size: 28px;
+    line-height: 1;
+}
+
+.stations-error-msg {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--c-danger, #c53030);
+    line-height: 1.55;
+    margin: 0;
+}
+
+.btn-retry {
+    margin-top: 4px;
+    padding: 7px 18px;
+    background: var(--c-primary);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm, 6px);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.btn-retry:hover {
+    background: var(--c-primary-hover, #2b6cb0);
 }
 
 .instructions {

@@ -581,8 +581,16 @@ function enqueueIsochrone(station) {
 function showStationsLoading(msg) {
     const overlay = document.getElementById('stations-loading-overlay');
     if (!overlay) return;
+    // Reset to loading state (hide error state if previously shown)
+    const loadingState = document.getElementById('stations-loading-state');
+    const errorState   = document.getElementById('stations-error-state');
+    if (loadingState) loadingState.classList.remove('hidden');
+    if (errorState)   errorState.classList.add('hidden');
     document.getElementById('stations-loading-msg').textContent = msg || 'A calcular isócronas…';
     overlay.classList.add('visible');
+    // Scroll the tab to the very top so the overlay is visible, then lock scrolling
+    const tabEl = document.getElementById('tab-stations');
+    if (tabEl) { tabEl.scrollTop = 0; tabEl.style.overflow = 'hidden'; }
 }
 
 function updateStationsLoadingMessage(msg) {
@@ -590,9 +598,43 @@ function updateStationsLoadingMessage(msg) {
     if (el) el.textContent = msg;
 }
 
+function showStationsLoadingError(msg) {
+    const loadingState = document.getElementById('stations-loading-state');
+    const errorState   = document.getElementById('stations-error-state');
+    const errorMsg     = document.getElementById('stations-error-msg');
+    if (loadingState) loadingState.classList.add('hidden');
+    if (errorState)   errorState.classList.remove('hidden');
+    if (errorMsg)     errorMsg.textContent = msg || 'Erro ao calcular empregos.';
+
+    // Close button — just hides the overlay
+    const closeBtn = document.getElementById('stations-error-close');
+    if (closeBtn) {
+        closeBtn.onclick = () => hideStationsLoading();
+    }
+    // Retry button — re-runs jobs calculation
+    const retryBtn = document.getElementById('stations-retry-btn');
+    if (retryBtn) {
+        retryBtn.onclick = async () => {
+            // Back to loading state
+            if (loadingState) loadingState.classList.remove('hidden');
+            if (errorState)   errorState.classList.add('hidden');
+            updateStationsLoadingMessage('A calcular empregos…');
+            const ok = await calculateJobs();
+            if (ok) {
+                hideStationsLoading();
+            } else {
+                showStationsLoadingError('Não foi possível calcular os empregos. Verifica a ligação à internet.');
+            }
+        };
+    }
+}
+
 function hideStationsLoading() {
     const overlay = document.getElementById('stations-loading-overlay');
     if (overlay) overlay.classList.remove('visible');
+    // Restore scroll on the tab
+    const tabEl = document.getElementById('tab-stations');
+    if (tabEl) tabEl.style.overflow = '';
 }
 
 async function runIsochroneQueue() {
@@ -613,9 +655,15 @@ async function runIsochroneQueue() {
         if (isochroneQueue.length > 0 && !fromCache) await new Promise(r => setTimeout(r, 350));
     }
     isochroneQueueRunning = false;
-    updateStationsLoadingMessage('A calcular população e empregos…');
-    await calculatePopulation();
-    hideStationsLoading();
+    updateStationsLoadingMessage('A calcular população…');
+    await calculatePopulation(false);   // triggerJobs=false — jobs handled below
+    updateStationsLoadingMessage('A calcular empregos…');
+    const jobsOk = await calculateJobs();
+    if (jobsOk) {
+        hideStationsLoading();
+    } else {
+        showStationsLoadingError('Não foi possível calcular os empregos. Verifica a ligação à internet.');
+    }
 }
 
 function drawCachedIsochrones(station, color) {
@@ -723,7 +771,7 @@ function removeStationIsochrones(stationId) {
 // ============================================================
 //                  POPULATION CALCULATION
 // ============================================================
-async function calculatePopulation() {
+async function calculatePopulation(triggerJobs = true) {
     if (stations.length === 0) {
         updateSidebarStats({ total_population: 0, total_population_5min: 0, total_population_10min: 0, points: [] });
         updateSidebar();
@@ -771,8 +819,8 @@ async function calculatePopulation() {
         updateSidebarStats(data);
         updateSidebar();
 
-        // Calculate jobs after population is known (non-blocking)
-        calculateJobs();
+        // Calculate jobs after population is known (non-blocking, unless suppressed)
+        if (triggerJobs) calculateJobs();
     } catch (error) {
         console.error('Erro ao calcular população:', error);
         stations = stations.map(s => ({ ...s, population_5min: Number(s.population_5min) || 0, population_10min: Number(s.population_10min) || 0, population_total: Number(s.population_total) || 0 }));
@@ -803,6 +851,7 @@ async function calculateJobs() {
         }))
     };
 
+    let success = true;
     try {
         const resp = await fetch('/api/jobs-in-isochrones', {
             method: 'POST',
@@ -815,6 +864,7 @@ async function calculateJobs() {
         (data.stations || []).forEach(s => { jobsData[String(s.id)] = s; });
     } catch (e) {
         console.error('Erro ao calcular empregos:', e);
+        success = false;
     }
 
     if (jobsPOIVisible) renderPOILayer();
@@ -823,6 +873,7 @@ async function calculateJobs() {
     computeOverlaps();
     // Refresh scenario ΔH now that jobsData is populated
     if (activeTab === 'scenario') updateScenarioSummary();
+    return success;
 }
 
 function updateJobsSummary() {
