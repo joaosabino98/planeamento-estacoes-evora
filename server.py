@@ -199,6 +199,47 @@ CENSUS_DATA = None
 POP_COLUMN = None
 METADATA = None
 
+# ==================== Isochrone Disk Cache ====================
+# Only real ORS results are cached — fallback circles are never persisted.
+ISOCHRONE_CACHE_FILE = "data/isochrone_cache.json"
+ISOCHRONE_CACHE = {}
+_isochrone_cache_lock = __import__('threading').Lock()
+
+
+def _isochrone_cache_key(lat, lng):
+    """Stable key rounded to ~1 m precision."""
+    return f"{round(float(lat), 5)},{round(float(lng), 5)}"
+
+
+def load_isochrone_cache():
+    """Read the isochrone cache from disk on startup."""
+    global ISOCHRONE_CACHE
+    if os.path.exists(ISOCHRONE_CACHE_FILE):
+        try:
+            with open(ISOCHRONE_CACHE_FILE, 'r', encoding='utf-8') as f:
+                ISOCHRONE_CACHE = json.load(f)
+            print(f"Cache de isócronas carregado: {len(ISOCHRONE_CACHE)} entrada(s)")
+        except Exception as e:
+            print(f"Aviso: não foi possível ler o cache de isócronas: {e}")
+            ISOCHRONE_CACHE = {}
+    else:
+        ISOCHRONE_CACHE = {}
+        print("Cache de isócronas: nenhum ficheiro existente, a começar vazio.")
+
+
+def _save_isochrone_cache():
+    """Atomically persist the in-memory cache to disk."""
+    import tempfile
+    os.makedirs('data', exist_ok=True)
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir='data', suffix='.json.tmp')
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(ISOCHRONE_CACHE, f)
+        os.replace(tmp_path, ISOCHRONE_CACHE_FILE)
+    except Exception as e:
+        print(f"Aviso: falha ao gravar cache de isócronas: {e}")
+
+
 def load_census_data():
     """Carrega dados de censos na memória"""
     global CENSUS_DATA, POP_COLUMN, METADATA
@@ -269,59 +310,62 @@ def get_census_geojson():
 
 @app.route('/api/isochrones', methods=['POST'])
 def get_isochrones():
-    """Calcula isócronas reais usando OpenRouteService"""
+    """Calcula isócronas reais usando OpenRouteService, com cache em disco."""
     data = request.json
     lat = data.get('lat')
     lng = data.get('lng')
     ranges = data.get('ranges', [300, 600])  # 5 min e 10 min em segundos
-    
+
     if not lat or not lng:
         return jsonify({"error": "Coordenadas não fornecidas"}), 400
-    
+
+    cache_key = _isochrone_cache_key(lat, lng)
+
+    # Cache hit — devolve sem consumir quota ORS
+    with _isochrone_cache_lock:
+        if cache_key in ISOCHRONE_CACHE:
+            return jsonify({"isochrones": ISOCHRONE_CACHE[cache_key], "from_cache": True})
+
     try:
-        # OpenRouteService API
         url = "https://api.openrouteservice.org/v2/isochrones/foot-walking"
-        
         headers = {
             "Accept": "application/json, application/geo+json",
             "Content-Type": "application/json"
         }
-        
-        # Adicionar API key se disponível
         if ORS_API_KEY:
             headers["Authorization"] = f"Bearer {ORS_API_KEY}"
-        
+
         body = {
             "locations": [[lng, lat]],  # OpenRouteService usa [lng, lat]
-            "range": ranges,  # em segundos
+            "range": ranges,            # em segundos
             "range_type": "time"
         }
-        
+
         response = requests.post(url, json=body, headers=headers, timeout=15)
-        
+
         if response.status_code == 200:
             result = response.json()
-            
-            # Converter para formato GeoJSON
             isochrones = []
             if 'features' in result:
                 for feature in result['features']:
                     isochrones.append(feature)
-            
+
             if isochrones:
+                # Cache miss com sucesso ORS — persiste em disco
+                with _isochrone_cache_lock:
+                    ISOCHRONE_CACHE[cache_key] = isochrones
+                _save_isochrone_cache()
                 return jsonify({"isochrones": isochrones})
-        
-        # Se chegou aqui, a API falhou ou não retornou dados
+
+        # API falhou ou não devolveu geometrias — fallback NÃO é guardado em cache
         print(f"OpenRouteService retornou status {response.status_code}, usando fallback")
         return create_fallback_isochrones(lat, lng, ranges)
-        
+
     except requests.exceptions.RequestException as e:
         print(f"Erro de conexão com OpenRouteService: {e}")
-        # Fallback: usar círculos
         return create_fallback_isochrones(lat, lng, ranges)
     except Exception as e:
         print(f"Erro ao obter isócronas: {e}")
-        # Fallback: usar círculos
         return create_fallback_isochrones(lat, lng, ranges)
 
 def create_fallback_isochrones(lat, lng, ranges):
@@ -1093,6 +1137,7 @@ def import_gtfs():
 if __name__ == '__main__':
     print("Carregando dados de censos...")
     load_census_data()
+    load_isochrone_cache()
     print("Servidor iniciando em http://localhost:5000")
     app.run(debug=True, port=5000)
 

@@ -38,6 +38,14 @@ Ferramenta web interativa para planeamento urbano orientado ao transporte públi
 
 - **Guardar projeto**: exporta um ficheiro JSON com grupos, estações, todas as alterações de densidade por BGRI e urbanizações desenhadas
 - **Carregar projeto**: restaura o estado completo, incluindo o cenário urbano e as isócronas
+- **Importar GTFS**: carrega um ficheiro `.zip` com dados GTFS — as paragens são importadas como estações organizadas por linha; substitui os grupos e estações existentes; as isócronas são calculadas sequencialmente para evitar erros de rate-limit
+
+### Análise de sobreposição de isócronas
+
+- Após o cálculo das isócronas, a aplicação detecta automaticamente pares de estações cujas áreas de captação de 5 minutos se sobrepõem
+- Cada cartão de estação apresenta **badges de sobreposição** indicando a percentagem de área partilhada e a população potencialmente duplicada
+- Dois níveis de alerta: **aviso** (⚠️ sobreposição ≥ 10%) e **perigo** (⛔ sobreposição ≥ 40%)
+- Útil para identificar paragens redundantes ou desnecessariamente próximas numa rede
 
 ## Como usar o mix de usos para localizar estações
 

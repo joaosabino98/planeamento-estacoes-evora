@@ -904,8 +904,8 @@ async function importGTFS(event) {
     event.target.value = '';
     if (!file) return;
 
-    if (stations.length > 0) {
-        const ok = confirm(`Serão adicionadas paragens GTFS às ${stations.length} estação/ões existentes. Continuar?`);
+    if (stations.length > 0 || groups.length > 0) {
+        const ok = confirm(`A importação GTFS irá substituir as ${stations.length} estação/ões e ${groups.length} grupo(s) existentes. Continuar?`);
         if (!ok) return;
     }
 
@@ -927,11 +927,20 @@ async function importGTFS(event) {
         return;
     }
 
+    // Save current state for undo, then wipe everything before repopulating
+    saveState();
+    stations = [];
+    groups = [];
+    activeGroupId = null;
+    isochroneQueue = [];
+    overlapData = {};
+    jobsData = {};
+
     let addedStations = 0;
-    data.routes.forEach(route => {
+    data.routes.forEach((route, routeIndex) => {
         const colorHex = route.color && /^#[0-9A-Fa-f]{6}$/.test(route.color)
             ? route.color
-            : GROUP_COLORS[groups.length % GROUP_COLORS.length];
+            : GROUP_COLORS[routeIndex % GROUP_COLORS.length];
         const groupId = Date.now() + Math.floor(Math.random() * 1e6);
         groups.push({ id: groupId, name: route.name, color: colorHex, visible: true });
         route.stops.forEach(stop => {

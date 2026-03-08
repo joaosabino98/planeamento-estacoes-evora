@@ -17,9 +17,10 @@ server.py             Flask API — isochrones, population calc, CSV export/impo
 process_data.py       One-time: converts BGRI .gpkg → data/census_data.geojson + metadata.json
 static/index.html     UI structure — sidebar tabs, floating edit panel, modals
 static/style.css      All styles
-static/app.js         All client logic (~1 340 lines)
+static/app.js         All client logic (~1 780 lines)
 data/census_data.geojson   Pre-processed BGRI polygons (1 667 subsections)
 data/metadata.json         pop_column name and CRS info
+data/isochrone_cache.json  Persisted ORS isochrone results (auto-created; never commit)
 BGRI2021_0705/        Raw source data (do not modify)
 ```
 
@@ -36,6 +37,20 @@ BGRI2021_0705/        Raw source data (do not modify)
 | `/api/population-in-isochrones` | POST | Main calc — see below |
 | `/api/export-points` | POST | Returns CSV of current stations |
 | `/api/import-points` | POST | Multipart CSV → list of points |
+| `/api/import-gtfs` | POST | Multipart `.zip` GTFS → grouped stops by dominant route, bbox-filtered to Évora |
+
+### `/api/import-gtfs` response
+
+```json
+{
+  "routes": [{ "route_id", "name", "color", "stops": [{ "stop_id", "name", "lat", "lng" }] }],
+  "total_routes": 6,
+  "total_stops": 47,
+  "skipped_stops": 3
+}
+```
+
+**Algorithm:** `routes.txt` → `trips.txt` → `stop_times.txt` (count trips per stop×route, pick dominant route per stop) → `stops.txt` with bbox filter (lat 38.4–38.7, lon −8.1 – −7.6). Cap at 500 000 stop_time rows. Fallback color auto-assigned when `route_color` absent.
 
 ### `/api/population-in-isochrones` payload
 
@@ -72,12 +87,17 @@ activeTab                 // 'stations' | 'scenario'
 // Stations & groups
 groups[]                  // [{ id, name, color, visible }]
 activeGroupId
-stations[]                // [{ id, lat, lng, groupId, isochrones[], cachedLat, cachedLng,
+stations[]                // [{ id, lat, lng, groupId, name (GTFS stop name | null),
+                          //    isochrones[], cachedLat, cachedLng,
                           //    isochroneError, creatingIsochrones,
                           //    population_5min, population_10min, population_total }]
 stationMarkers[]          // Leaflet marker instances (rebuilt by updateMap())
 isochroneLayers[]         // flat list of all isochrone Leaflet layers
 stationIsochroneLayers{}  // { stationId: [layer, layer] }
+
+// Isochrone request queue (serialises ORS calls, 350 ms gap between requests)
+isochroneQueue[]          // stations waiting for isochrone fetch
+isochroneQueueRunning     // boolean — prevents concurrent queue runs
 
 // Scenario
 censusGeoJSON             // raw parsed GeoJSON (kept in memory after first load)
@@ -174,7 +194,7 @@ densityOverrides["150010201001"] = {
   "saved_at": "ISO timestamp",
   "groups": [{ "id", "name", "color", "visible" }],
   "activeGroupId": 123,
-  "stations": [{ "id", "lat", "lng", "groupId", "population_5min", "population_10min", "population_total" }],
+  "stations": [{ "id", "lat", "lng", "groupId", "name", "population_5min", "population_10min", "population_total" }],
   "densityOverrides": { "<bgriId>": { "densityType", "coverage", "populationOverride" } },
   "newUrbanizations": [{ "id", "name", "geometry", "densityType", "coverage", "diffuse", "estimatedPop" }]
 }
@@ -284,14 +304,19 @@ Classificação TOD resultante:
 let jobsData = {};         // { stationId: { jobs_total, jobs_breakdown, shannon_h, tod_classification, self_sufficiency, poi_count, pois[] } }
 let jobsPOILayer = null;   // Leaflet LayerGroup com circleMarkers por POI
 let jobsPOIVisible = false;
+let overlapData = {};      // { stationId: [{ withId, withName, areaFraction, sharedPop }] }
 ```
 
 ### Funções frontend novas/modificadas
 
 | Função | O que faz |
 |---|---|
-| `calculateJobs()` | Async; chama `/api/jobs-in-isochrones`; popula `jobsData`; chama `updateJobsSummary()` + `updateSidebar()` + `updateScenarioSummary()` se no tab de cenário |
+| `calculateJobs()` | Async; chama `/api/jobs-in-isochrones`; popula `jobsData`; chama `updateJobsSummary()` + `updateSidebar()` + `computeOverlaps()` + `updateScenarioSummary()` se no tab de cenário |
 | `updateJobsSummary()` | Atualiza `#total-jobs` e `#avg-shannon-h` no painel global |
+| `computeOverlaps()` | Usa Turf.js `intersect`+`area` para todos os pares de isócronas de 5 min; popula `overlapData`; limiar de reporte ≥ 10%; chama `updateSidebar()` |
+| `importGTFS(event)` | Async; lê `.zip`; POST `/api/import-gtfs`; limpa estado existente; cria grupos+estações; chama `updateMap()` que enfileira isócronas |
+| `enqueueIsochrone(station)` | Adiciona estação a `isochroneQueue` (deduplicado); inicia `runIsochroneQueue()` se parado |
+| `runIsochroneQueue()` | Loop assíncrono: processa uma estação de cada vez com 350 ms de intervalo; chama `calculatePopulation()` quando fila esvazia |
 | `renderPOILayer()` | Cria `L.circleMarker` por POI, com cor por categoria e popup com nome + categoria + empregos estimados |
 | `togglePOILayer()` | Exportada como `window.togglePOILayer`; alterna visibilidade de `jobsPOILayer` no mapa |
 | `calculatePopulation()` *(mod.)* | Chama `calculateJobs()` de forma não-bloqueante após atualizar a sidebar |
@@ -317,6 +342,70 @@ const POI_COLORS = {
 - Empregos em `landuse=commercial/industrial` (polígonos) são estimativas baseadas em área × coeficiente; podem sobrestimar grandes parques industriais pouco densos.
 - O índice H é calculado com base em POIs presentes no OSM — zonas com mapeamento OSM incompleto produzirão valores de H subestimados (`low_coverage_warning: true` quando `poi_count < 10`).
 - `self_sufficiency` usa a população da última chamada a `/api/population-in-isochrones`; se não houver dados de população, fica em `null`.
+
+---
+
+## Cache de Isócronas em Disco
+
+As isócronas calculadas pelo ORS são persistidas em `data/isochrone_cache.json` para evitar chamadas repetidas (a quota ORS é limitada). **O fallback circular nunca é guardado em cache.**
+
+### Globals em `server.py`
+
+```python
+ISOCHRONE_CACHE_FILE = "data/isochrone_cache.json"
+ISOCHRONE_CACHE = {}                   # dict em memória: key → isochrones[]
+_isochrone_cache_lock = threading.Lock()
+```
+
+### Chave de cache
+
+```python
+def _isochrone_cache_key(lat, lng):
+    return f"{round(float(lat), 5)},{round(float(lng), 5)}"  # ~1 m de precisão
+```
+
+### Funções
+
+| Função | O que faz |
+|---|---|
+| `load_isochrone_cache()` | Chamada no startup; lê `data/isochrone_cache.json` se existir |
+| `_save_isochrone_cache()` | Escrita atómica via `tempfile.mkstemp` + `os.replace()` |
+
+### Fluxo em `get_isochrones()`
+
+1. **Cache hit** → devolve `{"isochrones": […], "from_cache": true}` sem chamar ORS
+2. **Cache miss + ORS OK** → guarda em `ISOCHRONE_CACHE` e persiste em disco; devolve resultado
+3. **ORS falhou / fallback** → devolve círculos sem tocar na cache
+
+---
+
+## Análise de Sobreposição de Isócronas
+
+### Estado
+
+```js
+let overlapData = {};
+// { "stationId": [{ withId, withName, areaFraction, sharedPop }] }
+// areaFraction = área de intersecção / área da isócrona 5 min desta estação
+// sharedPop = Math.round(population_5min × areaFraction)
+```
+
+### Função `computeOverlaps()`
+
+- Chama-se no final de `calculateJobs()`, após `updateSidebar()`
+- Itera todos os pares de estações com isócrona 5 min válida
+- Usa `turf.intersect()` + `turf.area()`
+- Limiar mínimo de reporte: `areaFraction ≥ 0.10` (10%)
+- Após popular `overlapData`, chama `updateSidebar()` para re-renderizar os badges
+
+### Badges no cartão de estação
+
+Renderizados em `updateSidebar()` após `${jobsHtml}`:
+
+| Classe CSS | Condição | Ícone |
+|---|---|---|
+| `.overlap-badge.warning` | 10% ≤ sobreposição < 40% | ⚠️ |
+| `.overlap-badge.danger` | sobreposição ≥ 40% | ⛔ |
 
 ---
 
@@ -374,6 +463,10 @@ color: var(--c-text-muted);
 | Urbanisation label marker | Always at `urb.layers[1]`. Use `labelMarker.setIcon(L.divIcon({className:'', iconSize:null, …}))` to rename — do not remove/re-add unless necessary. |
 | BGRI ID resolution order | `props.BGRI2021` → `props.SUBSECCAO` → `props.OBJECTID`. Used consistently in both frontend and backend. |
 | Population dedup | When isochrones from different stations overlap, population is attributed to the station whose centroid is closest to the overlap centroid. |
+| Isochrone queue | `initializeStationIsochrones()` enfileira em `isochroneQueue[]` em vez de disparar diretamente. `runIsochroneQueue()` processa uma a uma com 350 ms de intervalo e chama `calculatePopulation()` quando termina. Não chamar `calculatePopulation()` fora deste fluxo quando existem estações sem isócrona. |
+| Fallback não é cacheado | Apenas resultados reais do ORS são guardados em `data/isochrone_cache.json`. O fallback circular **nunca** deve ser persistido em cache — se for guardado, pedidos subsequentes receberão círculos em vez das isócronas reais. |
+| GTFS substitui, não adiciona | `importGTFS()` limpa `stations`, `groups`, `activeGroupId`, `isochroneQueue`, `overlapData` e `jobsData` antes de importar. Chama `saveState()` previamente para suportar undo. |
+| name em stations | O campo `name` nas estações é `null` para paragens manuais; contém o nome da paragem GTFS quando importado. É serializado no JSON do projeto e restaurado no load. |
 
 ---
 
