@@ -13,6 +13,17 @@ Ferramenta web interativa para planeamento urbano orientado ao transporte públi
 - Estatísticas por grupo (5 min / 10 min / total) e totais globais em tempo real
 - Undo/redo com Ctrl+Z / Ctrl+Shift+Z
 
+### Análise de Empregos e Mix de Usos
+
+- **Estimativa de emprego** por área de captação de 5 minutos, calculada automaticamente após colocar estações com isócronas válidas
+- Dados recolhidos em tempo real via **API Overpass (OpenStreetMap)** — não requer chave de API
+- Decomposição em **6 categorias funcionais**: Comércio, Serviços, Educação/Saúde, Cultura/Lazer, Restauração e Indústria
+- **Índice H de Shannon normalizado** (0–1): mede a diversidade do mix de usos na área de captação — um valor elevado indica maior equilíbrio entre funções urbanas
+- **Classificação TOD** automática por estação: *Excelente* · *Bom* · *Moderado* · *Em Transição* · *Monofuncional*
+- **Rácio de autossuficiência**: relação entre empregos estimados e população residente — valores próximos de 0.5 indicam equilíbrio entre residência e emprego
+- **Layer de POI** no mapa: visualização opcional dos pontos de interesse geolocalizados, coloridos por categoria
+- **Δ Mix de usos** no tab Cenário Urbano: estima a variação do índice H ao aplicar alterações de densidade ou novas urbanizações
+
 ### Cenário urbano (TOD)
 
 - Visualização **coroplética** de todas as subsecções estatísticas (BGRI) por densidade populacional (hab/ha)
@@ -27,6 +38,37 @@ Ferramenta web interativa para planeamento urbano orientado ao transporte públi
 
 - **Guardar projeto**: exporta um ficheiro JSON com grupos, estações, todas as alterações de densidade por BGRI e urbanizações desenhadas
 - **Carregar projeto**: restaura o estado completo, incluindo o cenário urbano e as isócronas
+
+## Como usar o mix de usos para localizar estações
+
+A análise de empregos e mix funcional é diretamente útil para decisões de localização de paragens em três dimensões:
+
+### 1. Maximizar a procura potencial de transporte
+
+Estações bem posicionadas captam tanto **residentes** (viagens de casa para o trabalho) como **empregados** (viagens do trabalho para outros destinos). Um rácio de autossuficiência próximo de **0.4–0.6** indica que a estação serve simultaneamente origens e destinos — o perfil ideal para uma paragem com procura bidirecional estável ao longo do dia.
+
+> Estações com autossuficiência < 0.2 servem principalmente dormitórios — elevada procura nas horas de ponta matinais mas fraca no restante dia. Estações > 0.8 servem principalmente zonas de emprego — o padrão inverso.
+
+### 2. Gerar procura em múltiplos períodos do dia
+
+O índice H de Shannon captura a variedade funcional da área de captação. Uma área com **H ≥ 0.65** (TOD Bom ou Excelente) combina residência, emprego, comércio, serviços e equipamentos — o que gera viagens distribuídas ao longo de todo o dia e não apenas nas horas de ponta. Isto traduz-se em:
+- Taxa de ocupação mais uniforme nos veículos
+- Menor necessidade de sobredimensionar a capacidade para as horas de ponta
+- Melhor viabilidade económica de linhas de baixa frequência
+
+### 3. Comparar localizações alternativas com o cenário urbano
+
+O **Δ H** do tab *Cenário Urbano* permite comparar o impacto de intervenções urbanísticas no mix funcional:
+
+1. Desenhar uma nova urbanização residencial próxima de uma estação candidata.
+2. Verificar se o Δ H sobe ou desce — uma urbanização exclusivamente residencial numa área já monofuncional **diminui** o H.
+3. Comparar alternativas: uma estação posicionada ligeiramente mais perto de uma centralidade de serviços pode ter um H substancialmente mais elevado com a mesma proposta de urbanização.
+
+### 4. Identificar zonas de investimento prioritário
+
+Estações com **classificação *Em Transição* ou *Monofuncional*** e **autossuficiência < 0.3** são candidatas a intervenção de usos mistos nos seus arredores — a localização da estação pode ser um catalisador para atrair comércio e serviços de proximidade. Neste caso, o Δ H do cenário de urbanização permite quantificar o benefício esperado de incluir pisos não-residenciais na nova urbanização.
+
+---
 
 ## Stack
 

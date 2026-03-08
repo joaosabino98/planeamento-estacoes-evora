@@ -184,6 +184,181 @@ Note: `isochrones` are **not** serialised — they are re-fetched on next `updat
 
 ---
 
+## Empregos e Mix de Usos — Módulo OSM
+
+### Visão geral
+
+Depois de calcular a população nas isócronas, a aplicação consulta automaticamente a API pública Overpass (OpenStreetMap) para estimar o emprego e o mix funcional na área de 5 minutos a pé de cada estação. Não são necessárias credenciais — a Overpass API é pública.
+
+### Constantes e funções em `server.py`
+
+```python
+# Coeficientes de emprego por hectare (calibrados com base nos dados INE SCIE)
+JOBS_PER_HA = {
+    'industrial': 20,
+    'commercial': 40,
+    'retail':     40,
+}
+```
+
+**`classify_poi_tags(el_type, tags) → (category, jobs_estimate)`**
+
+Mapeia tags OSM para uma de 6 categorias e estima empregos por POI:
+
+| Categoria | Exemplos de tags OSM | Empregos/POI (aprox.) |
+|---|---|---|
+| `commerce` | `shop=*`, `amenity=marketplace` | 3 |
+| `services` | `amenity=bank/post_office/insurance`, `office=*` | 5 |
+| `education_health` | `amenity=school/hospital/clinic/pharmacy` | 15–25 |
+| `culture_leisure` | `amenity=theatre/cinema/museum`, `tourism=*` | 4 |
+| `food_beverage` | `amenity=restaurant/cafe/bar/fast_food` | 4 |
+| `industry` | `landuse=industrial/commercial` (polígono × JOBS_PER_HA) | proporcional à área |
+
+Para polígonos de `landuse`, o cálculo é `area_m2 / 10000 × JOBS_PER_HA[type]`.
+Para nós/relações, usa o valor tabelado por POI.
+
+**`compute_shannon_h(residents, breakdown) → (h_normalised, tod_classification)`**
+
+Calcula o índice H de Shannon normalizado (0–1) sobre as 6 categorias funcionais mais população residente:
+
+```
+H = -Σ pᵢ × log₂(pᵢ)          # Shannon entropy
+H_norm = H / log₂(N_categories) # Normalizado para [0, 1]
+```
+
+Classificação TOD resultante:
+
+| H_norm | Classificação |
+|---|---|
+| ≥ 0.80 | TOD Excelente |
+| ≥ 0.65 | TOD Bom |
+| ≥ 0.50 | TOD Moderado |
+| ≥ 0.35 | Em Transição |
+| < 0.35 | Monofuncional |
+
+### Endpoint `/api/jobs-in-isochrones`
+
+**Método:** `POST`  
+**Payload:**
+```json
+{
+  "stations": [
+    { "id": "uuid", "isochrone_5min": { "type": "Feature", "geometry": { … } } }
+  ]
+}
+```
+
+**Resposta:**
+```json
+{
+  "stations": [
+    {
+      "id": "uuid",
+      "jobs_total": 420,
+      "jobs_breakdown": {
+        "commerce": 120, "services": 85, "education_health": 95,
+        "culture_leisure": 40, "food_beverage": 60, "industry": 20
+      },
+      "shannon_h": 0.72,
+      "tod_classification": "TOD Bom",
+      "self_sufficiency": 0.58,
+      "poi_count": 143,
+      "low_coverage_warning": false,
+      "pois": [ { "lat", "lng", "category", "name", "jobs" } ]
+    }
+  ]
+}
+```
+
+**Fluxo interno:**
+1. Constrói bbox a partir de todas as isócronas.
+2. Envia query Overpass para `node`, `way` e `relation` com as tags relevantes.
+3. Para cada elemento, chama `classify_poi_tags()` — ignora elementos sem categoria.
+4. Filtra por point-in-polygon com `shapely.geometry.shape(isochrone).contains(Point(lng, lat))`.
+5. Agrega por categoria; calcula Shannon H com `compute_shannon_h()`.
+6. Calcula `self_sufficiency = jobs_total / (jobs_total + residents_5min)` (usa população da request se fornecida).
+
+### Estado frontend (`app.js`)
+
+```js
+let jobsData = {};         // { stationId: { jobs_total, jobs_breakdown, shannon_h, tod_classification, self_sufficiency, poi_count, pois[] } }
+let jobsPOILayer = null;   // Leaflet LayerGroup com circleMarkers por POI
+let jobsPOIVisible = false;
+```
+
+### Funções frontend novas/modificadas
+
+| Função | O que faz |
+|---|---|
+| `calculateJobs()` | Async; chama `/api/jobs-in-isochrones`; popula `jobsData`; chama `updateJobsSummary()` + `updateSidebar()` + `updateScenarioSummary()` se no tab de cenário |
+| `updateJobsSummary()` | Atualiza `#total-jobs` e `#avg-shannon-h` no painel global |
+| `renderPOILayer()` | Cria `L.circleMarker` por POI, com cor por categoria e popup com nome + categoria + empregos estimados |
+| `togglePOILayer()` | Exportada como `window.togglePOILayer`; alterna visibilidade de `jobsPOILayer` no mapa |
+| `calculatePopulation()` *(mod.)* | Chama `calculateJobs()` de forma não-bloqueante após atualizar a sidebar |
+| `updateSidebar()` *(mod.)* | Cada cartão de estação inclui agora uma secção `.station-jobs-section` com total de empregos, breakdown por categoria, barra de progresso H e classificação TOD |
+| `updateScenarioSummary()` *(reescrito)* | Calcula ΔH usando helper local `shannonH()`; estima empregos adicionais a partir de área × `JOBS_PER_HA` para overrides de BGRI e novas urbanizações; mostra fallback quando `jobsData` está vazio |
+
+### Paleta de cores dos POI
+
+```js
+const POI_COLORS = {
+    commerce:          '#ed8936',  // âmbar
+    services:          '#3182ce',  // azul
+    education_health:  '#38a169',  // verde
+    culture_leisure:   '#9f7aea',  // púrpura
+    food_beverage:     '#e53e3e',  // vermelho
+    industry:          '#718096',  // cinzento
+};
+```
+
+### Limitações conhecidas
+
+- A Overpass API tem rate limits; pedidos muito frequentes podem receber HTTP 429. A aplicação não implementa retry automático — o utilizador deve recalcular manualmente.
+- Empregos em `landuse=commercial/industrial` (polígonos) são estimativas baseadas em área × coeficiente; podem sobrestimar grandes parques industriais pouco densos.
+- O índice H é calculado com base em POIs presentes no OSM — zonas com mapeamento OSM incompleto produzirão valores de H subestimados (`low_coverage_warning: true` quando `poi_count < 10`).
+- `self_sufficiency` usa a população da última chamada a `/api/population-in-isochrones`; se não houver dados de população, fica em `null`.
+
+---
+
+## Design System CSS (`style.css`)
+
+O ficheiro CSS usa um bloco `:root` com variáveis nomeadas. **Não introduzir valores hexadecimais diretamente nas regras** — usar sempre as variáveis.
+
+```css
+:root {
+    /* Marca */
+    --c-primary: #667eea;  --c-primary-dark: #5a6fd6;
+    --c-primary-bg: #ebf4ff;  --c-primary-border: #c3dafe;
+
+    /* Semântico */
+    --c-red / --c-red-bg;  --c-green / --c-green-bg;
+    --c-orange / --c-orange-bg;  --c-purple / --c-purple-bg;
+
+    /* Texto */
+    --c-text-primary: #2d3748;  --c-text-secondary: #4a5568;
+    --c-text-muted: #718096;  --c-text-disabled: #a0aec0;
+
+    /* Superfícies */
+    --c-bg-subtle: #f8fafc;  --c-bg-hover: #edf2f7;
+    --c-border: #e2e8f0;  --c-border-faint: #f0f4f8;
+
+    /* Raios: --radius-sm(4) --radius-md(8) --radius-lg(12) --radius-full(9999) */
+    /* Sombras: --shadow-xs --shadow-sm --shadow-md --shadow-lg */
+    /* Fontes: --font-xs(11) --font-sm(12) --font-base(13) ... --font-2xl(28) */
+    /* Espaçamento: --sp-1(4px) ... --sp-6(24px) */
+}
+```
+
+**Padrão de cabeçalhos de secção** (sidebar):
+```css
+/* Todos os h2/h3 de secção seguem este estilo: */
+font-size: var(--font-xs);  font-weight: 700;
+text-transform: uppercase;  letter-spacing: 0.07em;
+color: var(--c-text-muted);
+```
+
+---
+
 ## Known fixes / decisions (do not regress)
 
 | Topic | Decision |
@@ -193,6 +368,9 @@ Note: `isochrones` are **not** serialised — they are re-fetched on next `updat
 | No floors input | Floors slider was removed. Formula is `residents_ha × area_ha × (coverage/100)` only. Do not reintroduce a floors factor. |
 | Edit panel is floating | `#edit-panel` is `position:fixed; bottom:24px; right:24px` — it is **not** inside the sidebar. Visibility is toggled via `opacity`+`transform` (not `display:none`) so CSS transitions work. Closes on ESC, map click (empty area), or ✕ button. |
 | CSV import/export removed | Project is saved/loaded as a single JSON. The old `/api/export-points` and `/api/import-points` endpoints and their frontend functions were removed. Do not re-add CSV buttons. |
+| Jobs não são serializados | `jobsData` não é guardado no JSON do projeto — é recalculado ao recalcular o catchment. Não guardar POIs no ficheiro de projeto (volume excessivo). |
+| Overpass bbox | A query é sempre feita com uma bbox única que engloba todas as isócronas, não por estação individualmente — reduz o nº de pedidos HTTP. |
+| ΔH no cenário usa estimativa local | `updateScenarioSummary()` não relê `jobsData` para calcular ΔH — usa um helper JS `shannonH()` local com área × JOBS_PER_HA. Não sincronizar com os dados reais dos POI para evitar dependência de ordem de cálculo. |
 | Urbanisation label marker | Always at `urb.layers[1]`. Use `labelMarker.setIcon(L.divIcon({className:'', iconSize:null, …}))` to rename — do not remove/re-add unless necessary. |
 | BGRI ID resolution order | `props.BGRI2021` → `props.SUBSECCAO` → `props.OBJECTID`. Used consistently in both frontend and backend. |
 | Population dedup | When isochrones from different stations overlap, population is attributed to the station whose centroid is closest to the overlap centroid. |
