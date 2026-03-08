@@ -170,7 +170,12 @@ def compute_shannon_h(residents, breakdown):
 
     # Perfil funcional
     jobs_total = sum(v for k, v in cats.items() if k != 'residents')
-    ratio = jobs_total / residents if residents > 0 else 0
+    if residents > 0:
+        ratio = jobs_total / residents
+    elif jobs_total > 0:
+        ratio = 1.0  # sem residentes mas com emprego → nó de emprego
+    else:
+        ratio = 0.0
     if h_norm >= 0.6:
         classification = 'Centralidade multifuncional'
     elif h_norm >= 0.4 and ratio >= 0.2:
@@ -947,7 +952,12 @@ def jobs_in_isochrones():
 
         # Self-sufficiency index: jobs / active population proxy
         active_pop = residents * 0.45   # ~45% of residents are economically active (Évora 2021)
-        self_sufficiency = round(jobs_total / active_pop, 3) if active_pop > 0 else 0.0
+        if active_pop > 0:
+            self_sufficiency = round(jobs_total / active_pop, 3)
+        elif jobs_total > 0:
+            self_sufficiency = 1.0  # sem residentes mas com emprego → auto-suficiência máxima
+        else:
+            self_sufficiency = 0.0
 
         poi_list = [
             {'lat': p['lat'], 'lng': p['lon'], 'category': p['category'],
