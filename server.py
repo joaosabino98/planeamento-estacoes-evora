@@ -168,11 +168,11 @@ def compute_shannon_h(residents, breakdown):
     h_max = math.log(n_positive)
     h_norm = h / h_max if h_max > 0 else 0.0
 
-    # TOD classification
+    # Perfil funcional
     jobs_total = sum(v for k, v in cats.items() if k != 'residents')
     ratio = jobs_total / residents if residents > 0 else 0
     if h_norm >= 0.6:
-        classification = 'TOD maduro'
+        classification = 'Centralidade multifuncional'
     elif h_norm >= 0.4 and ratio >= 0.2:
         classification = 'Misto equilibrado'
     elif ratio >= 0.5:
@@ -279,6 +279,9 @@ def load_census_data():
     if POP_COLUMN and POP_COLUMN in CENSUS_DATA.columns:
         total_pop = CENSUS_DATA[POP_COLUMN].sum()
         print(f"População total nos dados: {total_pop:,.0f}")
+        if METADATA is None:
+            METADATA = {}
+        METADATA['total_pop'] = int(total_pop)
 
 @app.route('/')
 def index():
@@ -747,11 +750,43 @@ def calculate_population():
         except Exception as e:
             print(f"Erro ao processar urbanização: {e}")
     
+    # ── Compute uncovered BGRIs (pop ≥ 50, not intersecting any isochrone) ──
+    UNCOVERED_MIN_POP = 50
+    uncovered_bgris = []
+    if POP_COLUMN and POP_COLUMN in CENSUS_DATA.columns:
+        all_coverage = union_10min if union_10min is not None else union_5min
+        if all_coverage is not None:
+            try:
+                covered_mask = CENSUS_DATA.geometry.intersects(all_coverage)
+                uncovered_df = CENSUS_DATA[~covered_mask].copy()
+            except Exception as e:
+                print(f"Aviso: falha ao calcular BGRIs não cobertas: {e}")
+                uncovered_df = gpd.GeoDataFrame()
+        else:
+            uncovered_df = CENSUS_DATA.copy()
+
+        if len(uncovered_df) > 0 and POP_COLUMN in uncovered_df.columns:
+            uncovered_df = uncovered_df[uncovered_df[POP_COLUMN] >= UNCOVERED_MIN_POP]
+            uncovered_df = uncovered_df.sort_values(POP_COLUMN, ascending=False)
+            for _, row in uncovered_df.head(30).iterrows():
+                bgri_id = str(row.get('BGRI2021', row.get('SUBSECCAO', row.get('OBJECTID', ''))))
+                centroid = row.geometry.centroid
+                shape_area = row.get('SHAPE_Area', None)
+                area_ha = round(float(shape_area) / 10000, 1) if shape_area else None
+                uncovered_bgris.append({
+                    'id': bgri_id,
+                    'population': int(row[POP_COLUMN]),
+                    'lat': round(centroid.y, 5),
+                    'lng': round(centroid.x, 5),
+                    'area_ha': area_ha,
+                })
+
     return jsonify({
         "total_population_5min": round(total_pop_5min),
         "total_population_10min": round(total_pop_10min),
         "total_population": round(total_pop_5min + total_pop_10min),
-        "points": results
+        "points": results,
+        "uncovered_bgris": uncovered_bgris,
     })
 
 @app.route('/api/jobs-in-isochrones', methods=['POST'])

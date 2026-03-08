@@ -1,10 +1,16 @@
 // ============================================================
-// Mobilidade e Território — Desenvolvimento Orientado ao Transporte (TOD) — Évora
+// Mobilidade e Território — Análise de Cobertura Pedonal das Paragens — Évora
 // ============================================================
 
 // Coordenadas de Évora (centro da cidade)
 const EVORA_CENTER = [38.5667, -7.9075];
 const EVORA_ZOOM = 13;
+
+// ==================== City-wide totals ====================
+// Empregos totais na cidade segundo CME
+const CITY_TOTAL_JOBS = 23674;
+// População total carregada do servidor (/api/census-metadata)
+let cityTotalPop = 0;
 
 // ==================== Color Palette ====================
 const GROUP_COLORS = [
@@ -186,6 +192,12 @@ function initMap() {
     renderDensityLegend();
     renderGroups();
     saveState();
+
+    // Load city-wide population total for coverage stats
+    fetch('/api/census-metadata')
+        .then(r => r.json())
+        .then(m => { if (m && m.total_pop) { cityTotalPop = m.total_pop; } })
+        .catch(() => {});
 }
 
 // ============================================================
@@ -563,20 +575,47 @@ function enqueueIsochrone(station) {
     if (!isochroneQueueRunning) runIsochroneQueue();
 }
 
+// ============================================================
+//               STATIONS LOADING OVERLAY
+// ============================================================
+function showStationsLoading(msg) {
+    const overlay = document.getElementById('stations-loading-overlay');
+    if (!overlay) return;
+    document.getElementById('stations-loading-msg').textContent = msg || 'A calcular isócronas…';
+    overlay.classList.add('visible');
+}
+
+function updateStationsLoadingMessage(msg) {
+    const el = document.getElementById('stations-loading-msg');
+    if (el) el.textContent = msg;
+}
+
+function hideStationsLoading() {
+    const overlay = document.getElementById('stations-loading-overlay');
+    if (overlay) overlay.classList.remove('visible');
+}
+
 async function runIsochroneQueue() {
     if (isochroneQueueRunning) return;
     isochroneQueueRunning = true;
+    const totalInQueue = isochroneQueue.length;
+    let doneCount = 0;
     while (isochroneQueue.length > 0) {
         const station = isochroneQueue.shift();
         // Skip if station was removed or already has a valid cache since it was enqueued
-        if (!stations.find(s => s.id === station.id)) continue;
-        if (hasValidCache(station)) continue;
-        await createIsochrones(station);
+        if (!stations.find(s => s.id === station.id)) { doneCount++; continue; }
+        if (hasValidCache(station)) { doneCount++; continue; }
+        doneCount++;
+        if (totalInQueue > 1) updateStationsLoadingMessage(`A calcular isócronas… ${doneCount} / ${totalInQueue}`);
+        const fromCache = await createIsochrones(station);
         updateSidebar(); // progressive feedback
-        if (isochroneQueue.length > 0) await new Promise(r => setTimeout(r, 350));
+        // Only throttle when ORS was actually called — cache hits need no delay
+        if (isochroneQueue.length > 0 && !fromCache) await new Promise(r => setTimeout(r, 350));
     }
     isochroneQueueRunning = false;
-    calculatePopulation();
+    updateStationsLoadingMessage('A calcular população e empregos…');
+    await calculatePopulation();
+    hideStationsLoading();
 }
 
 function drawCachedIsochrones(station, color) {
@@ -644,6 +683,7 @@ async function createIsochrones(station, forceRefresh = false) {
         station.cachedLat = station.lat; station.cachedLng = station.lng; station.isochroneError = null;
         const idx = stations.findIndex(s => s.id === station.id);
         if (idx !== -1) { stations[idx].isochrones = station.isochrones; stations[idx].cachedLat = station.cachedLat; stations[idx].cachedLng = station.cachedLng; stations[idx].isochroneError = null; }
+        return !!data.from_cache;  // signal to queue: no delay needed on cache hit
     } catch (error) {
         console.error('Erro ao criar isócronas:', error);
         if (station.loadingMarker && map.hasLayer(station.loadingMarker)) map.removeLayer(station.loadingMarker);
@@ -812,6 +852,7 @@ function updateJobsSummary() {
     const avgH = entries.reduce((s, e) => s + (e.shannon_h || 0), 0) / entries.length;
     totalJobsEl.textContent = formatNumber(totalJobs);
     avgHEl.textContent      = avgH.toFixed(2);
+    updateCoverageCard();
 }
 
 function renderPOILayer() {
@@ -974,6 +1015,7 @@ async function importGTFS(event) {
 
     if (!activeGroupId && groups.length > 0) activeGroupId = groups[0].id;
     saveState();
+    showStationsLoading(`A calcular isócronas para ${addedStations} paragem(ns)…`);
     renderGroups();
     updateMap();     // enqueues isochrone fetches for all new stations (sequential, 350 ms apart)
     updateSidebar();
@@ -991,6 +1033,53 @@ function updateSidebarStats(data) {
     document.getElementById('total-population').textContent = formatNumber(data.total_population);
     document.getElementById('total-pop-5min').textContent = formatNumber(data.total_population_5min);
     document.getElementById('total-pop-10min').textContent = formatNumber(data.total_population_10min);
+    updateCoverageCard();
+}
+
+/**
+ * Atualiza o cartão de cobertura da rede com populaçao e empregos.
+ * Pode ser chamada independentemente após mudar globalPopStats ou jobsData.
+ */
+function updateCoverageCard() {
+    const popEl   = document.getElementById('coverage-pop-value');
+    const popBar  = document.getElementById('coverage-pop-bar');
+    const jobsEl  = document.getElementById('coverage-jobs-value');
+    const jobsBar = document.getElementById('coverage-jobs-bar');
+    if (!popEl) return;
+
+    // Pop abrangida = total 5min + 10min (sem dupla contagem, vem do servidor)
+    const coveredPop = globalPopStats.total_population || 0;
+    if (cityTotalPop > 0 && coveredPop > 0) {
+        const pct = Math.min(100, (coveredPop / cityTotalPop) * 100);
+        popEl.textContent  = `${formatNumber(coveredPop)} (${pct.toFixed(1)}%)`;
+        popBar.style.width = `${pct.toFixed(1)}%`;
+    } else if (coveredPop > 0) {
+        popEl.textContent  = formatNumber(coveredPop);
+        popBar.style.width = '0%';
+    } else {
+        popEl.textContent  = '—';
+        popBar.style.width = '0%';
+    }
+
+    // Empregos: de-duplicate POIs por osm_id
+    const seen = new Map();
+    Object.values(jobsData).forEach(e => {
+        (e.pois || []).forEach(p => {
+            if (p.osm_id && !seen.has(p.osm_id)) seen.set(p.osm_id, p.jobs || 0);
+        });
+    });
+    const coveredJobs = seen.size > 0
+        ? Array.from(seen.values()).reduce((s, v) => s + v, 0)
+        : Object.values(jobsData).reduce((s, e) => s + (e.jobs_total || 0), 0);
+
+    if (coveredJobs > 0) {
+        const pct = Math.min(100, (coveredJobs / CITY_TOTAL_JOBS) * 100);
+        jobsEl.textContent  = `${formatNumber(coveredJobs)} (${pct.toFixed(1)}%)`;
+        jobsBar.style.width = `${pct.toFixed(1)}%`;
+    } else {
+        jobsEl.textContent  = '—';
+        jobsBar.style.width = '0%';
+    }
 }
 
 function updateSidebar() {
@@ -1759,6 +1848,7 @@ async function loadProject(event) {
         stationMarkers = [];
         stationIsochroneLayers = {};
         isochroneLayers = [];
+        showStationsLoading(`A recarregar isócronas para ${stations.length} estação(ões)…`);
         renderGroups();
         updateMap();
         updateSidebar();
@@ -1791,6 +1881,109 @@ function escapeHtml(str) {
 }
 
 // ============================================================
+//               OFF-SCREEN MAP CAPTURE HELPER
+// ============================================================
+/**
+ * Renders a Leaflet map in a hidden off-screen container and captures it with
+ * html2canvas. Does NOT touch the live map at all.
+ *
+ * @param {Object}   opts
+ * @param {L.LatLngBounds} opts.bounds            - Bounds to fitBounds to
+ * @param {number}   opts.width                   - Container width in px
+ * @param {number}   opts.height                  - Container height in px
+ * @param {Array}    [opts.stationMarkers=[]]      - [{lat,lng,color}]
+ * @param {Array}    [opts.isochroneFeatures=[]]   - [{feature:GeoJSON, color}]
+ * @param {Array}    [opts.labelledDots=[]]        - [{lat,lng,label}] numbered dots
+ * @returns {Promise<string|null>}  dataURL PNG or null on failure
+ */
+async function captureMapToImage({ bounds, width, height, stationMarkers = [], isochroneFeatures = [], labelledDots = [] }) {
+    const container = document.createElement('div');
+    container.style.cssText = `position:fixed;left:-9999px;top:-9999px;width:${width}px;height:${height}px;z-index:-1;overflow:hidden;`;
+    document.body.appendChild(container);
+
+    let offMap = null;
+    try {
+        offMap = L.map(container, {
+            zoomControl: false,
+            attributionControl: false,
+            preferCanvas: true,
+            fadeAnimation: false,
+            zoomAnimation: false,
+        });
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            crossOrigin: 'anonymous',
+        }).addTo(offMap);
+
+        if (bounds && bounds.isValid()) {
+            offMap.fitBounds(bounds, { padding: [48, 48], animate: false });
+        }
+
+        // Isochrone outlines (10 min, coloured by group)
+        isochroneFeatures.forEach(({ feature, color }) => {
+            try {
+                L.geoJSON(feature, {
+                    style: {
+                        color: color || '#667eea',
+                        weight: 2,
+                        opacity: 0.75,
+                        fillColor: color || '#667eea',
+                        fillOpacity: 0.13,
+                    },
+                }).addTo(offMap);
+            } catch (_) {}
+        });
+
+        // Station circle markers (coloured by group)
+        stationMarkers.forEach(({ lat, lng, color }) => {
+            L.circleMarker([lat, lng], {
+                radius: 7,
+                color: '#fff',
+                weight: 2.5,
+                fillColor: color || '#667eea',
+                fillOpacity: 1,
+            }).addTo(offMap);
+        });
+
+        // Numbered dot markers for uncovered BGRIs
+        labelledDots.forEach(({ lat, lng, label }) => {
+            const icon = L.divIcon({
+                className: '',
+                iconSize: [22, 22],
+                iconAnchor: [11, 11],
+                html: `<div style="width:22px;height:22px;border-radius:50%;background:#e53e3e;border:2px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;color:#fff;font-family:system-ui,sans-serif;">${label}</div>`,
+            });
+            L.marker([lat, lng], { icon }).addTo(offMap);
+        });
+
+        // Wait for tiles: resolve on map 'load' event OR after a hard cap
+        await new Promise(resolve => {
+            let done = false;
+            const finish = () => { if (!done) { done = true; resolve(); } };
+            offMap.once('load', () => setTimeout(finish, 200));
+            setTimeout(finish, 2500);    // hard cap
+            setTimeout(() => { if (!done) finish(); }, 900); // fallback min
+        });
+
+        const canvas = await html2canvas(container, {
+            useCORS: true,
+            scale: 1.5,
+            logging: false,
+            width,
+            height,
+        });
+        return canvas.toDataURL('image/png');
+    } catch (e) {
+        console.warn('captureMapToImage falhou:', e);
+        return null;
+    } finally {
+        try { if (offMap) offMap.remove(); } catch (_) {}
+        try { container.remove(); } catch (_) {}
+    }
+}
+
+// ============================================================
 //                       INIT
 // ============================================================
 //                     EXPORT REPORT (PDF via browser print)
@@ -1806,14 +1999,33 @@ async function exportReport() {
     btn.innerHTML = '⏳ A gerar...';
     btn.disabled = true;
 
-    // ── 1. Capturar mapa com html2canvas ──────────────────────
-    let mapImgSrc = null;
-    try {
-        const mapEl = document.getElementById('map');
-        const canvas = await html2canvas(mapEl, { useCORS: true, scale: 1.5, logging: false });
-        mapImgSrc = canvas.toDataURL('image/png');
-    } catch (e) {
-        console.warn('html2canvas falhou:', e);
+    // ── 1. Capturar mapas em off-screen (sem perturbar o mapa activo) ─────
+    // Visão geral: marcas das estações + contorno das isócronas de 10 min
+    const overviewBounds = L.latLngBounds(stations.map(s => [s.lat, s.lng]));
+    const overviewMarkers = stations.map(s => ({
+        lat: s.lat, lng: s.lng,
+        color: (getGroupForStation(s) || {}).color || '#667eea',
+    }));
+    const overviewIsochrones = stations.flatMap(s => {
+        const iso10 = s.isochrones && s.isochrones[1];
+        if (!iso10) return [];
+        return [{ feature: iso10, color: (getGroupForStation(s) || {}).color || '#667eea' }];
+    });
+    const mapImgSrc = await captureMapToImage({
+        bounds: overviewBounds, width: 1120, height: 630,
+        stationMarkers: overviewMarkers, isochroneFeatures: overviewIsochrones,
+    });
+
+    // Mapa de zonas sem cobertura (capturado aqui para manter a construção HTML síncrona)
+    const uncoveredList = globalPopStats.uncovered_bgris || [];
+    let uncovImgSrc = null;
+    if (uncoveredList.length > 0) {
+        const uncovBounds = L.latLngBounds(uncoveredList.map(b => [b.lat, b.lng]));
+        const uncovDots = uncoveredList.map((b, i) => ({ lat: b.lat, lng: b.lng, label: i + 1 }));
+        uncovImgSrc = await captureMapToImage({
+            bounds: uncovBounds, width: 900, height: 506,
+            labelledDots: uncovDots,
+        });
     }
 
     btn.innerHTML = originalText;
@@ -1840,12 +2052,12 @@ async function exportReport() {
     const fmt = n => (n == null ? '—' : Math.round(n).toLocaleString('pt-PT'));
     const fmtF = n => (n == null ? '—' : n.toFixed(2));
     const todColor = cls => ({
-        'TOD maduro': '#276749', 'Misto equilibrado': '#0e7490',
+        'Centralidade multifuncional': '#276749', 'Misto equilibrado': '#0e7490',
         'Nó de emprego': '#3730a3', 'Misto desequilibrado': '#92400e',
         'Dormitório': '#9b1c1c'
     }[cls] || '#4a5568');
     const todBg = cls => ({
-        'TOD maduro': '#f0fff4', 'Misto equilibrado': '#ecfeff',
+        'Centralidade multifuncional': '#f0fff4', 'Misto equilibrado': '#ecfeff',
         'Nó de emprego': '#eef2ff', 'Misto desequilibrado': '#fffbeb',
         'Dormitório': '#fff5f5'
     }[cls] || '#f8fafc');
@@ -1859,7 +2071,7 @@ async function exportReport() {
 <html lang="pt">
 <head>
 <meta charset="UTF-8">
-<title>Relatório TOD — Évora</title>
+<title>Análise de Cobertura Pedonal das Paragens — Évora</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; font-size: 13px; color: #2d3748; background: #fff; padding: 32px; }
@@ -1868,7 +2080,7 @@ async function exportReport() {
   h3 { font-size: 13px; font-weight: 700; margin: 20px 0 8px; }
   .subtitle { font-size: 12px; color: #718096; margin-bottom: 6px; }
   .meta { font-size: 11px; color: #a0aec0; margin-top: 2px; }
-  .map-img { width: 100%; max-height: 420px; object-fit: cover; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 4px; }
+  .map-img { width: 100%; aspect-ratio: 16/9; object-fit: contain; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 4px; background: #f8fafc; }
   .map-placeholder { background: #f8fafc; border: 1px dashed #cbd5e0; border-radius: 8px; height: 180px; display: flex; align-items: center; justify-content: center; color: #a0aec0; font-size: 12px; margin-bottom: 4px; }
   .summary-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 8px; }
   .kpi { background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; padding: 12px 14px; }
@@ -1894,10 +2106,9 @@ async function exportReport() {
   .no-data { color: #a0aec0; font-style: italic; }
   @media print {
     body { padding: 16px; }
-    .map-img { max-height: 360px; }
-    .group-header { page-break-before: auto; }
-    table { page-break-inside: avoid; }
-    h2 { page-break-before: auto; }
+    .map-img { max-height: none; width: 100%; }
+    .group-header { page-break-after: avoid; break-after: avoid; }
+    h2 { page-break-after: avoid; break-after: avoid; }
     .kpi { break-inside: avoid; }
   }
   @page { margin: 18mm 18mm 20mm; }
@@ -1906,9 +2117,9 @@ async function exportReport() {
 <body>
 
 <!-- ===== CABEÇALHO ===== -->
-<h1>Relatório TOD — Mobilidade e Território</h1>
-<p class="subtitle">Évora — Desenvolvimento Orientado ao Transporte</p>
-<p class="meta">Gerado em ${dateStr} às ${timeStr} &nbsp;·&nbsp; ${groups.length} grupo${groups.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${stations.length} estação${stations.length !== 1 ? 'ões' : ''}</p>
+<h1>Análise de Cobertura Pedonal das Paragens</h1>
+<p class="subtitle">Mobilidade e Território — Évora</p>
+<p class="meta">Gerado em ${dateStr} às ${timeStr} &nbsp;·&nbsp; ${groups.length} grupo${groups.length !== 1 ? 's' : ''} &nbsp;·&nbsp; ${stations.length} ${stations.length !== 1 ? 'estações' : 'estação'}</p>
 
 <!-- ===== MAPA ===== -->
 <h2>Mapa</h2>
@@ -1939,6 +2150,24 @@ ${mapImgSrc
     <div class="kpi-label">H médio (mix de usos)</div>
     <div class="kpi-value">${avgH != null ? fmtF(avgH) : '—'}</div>
     <div class="kpi-sub">índice Shannon norm.</div>
+  </div>
+</div>`;
+
+    // Coverage KPIs row
+    const totalPopAll = (globalPopStats.total_population_5min || 0) + (globalPopStats.total_population_10min || 0);
+    const popCovPct  = cityTotalPop > 0 && totalPopAll > 0 ? (totalPopAll / cityTotalPop * 100).toFixed(1) : null;
+    const jobsCovPct = CITY_TOTAL_JOBS > 0 && hValues.length > 0 && totalJobsAll > 0 ? (totalJobsAll / CITY_TOTAL_JOBS * 100).toFixed(1) : null;
+    html += `
+<div class="summary-grid" style="grid-template-columns:repeat(2,1fr); margin-top:-4px;">
+  <div class="kpi" style="border-color:#c6f6d5; background:linear-gradient(135deg,rgba(56,161,105,.06),rgba(49,130,206,.06));">
+    <div class="kpi-label">Cobertura pop. (10 min)</div>
+    <div class="kpi-value">${popCovPct != null ? popCovPct + '%' : '—'}</div>
+    <div class="kpi-sub">${fmt(totalPopAll)} hab. de ${fmt(cityTotalPop)} totais</div>
+  </div>
+  <div class="kpi" style="border-color:#bee3f8; background:linear-gradient(135deg,rgba(49,130,206,.06),rgba(159,122,234,.06));">
+    <div class="kpi-label">Cobertura empregos (5 min)</div>
+    <div class="kpi-value">${jobsCovPct != null ? jobsCovPct + '%' : '—'}</div>
+    <div class="kpi-sub">${hValues.length > 0 ? fmt(totalJobsAll) : '—'} emp. de ${fmt(CITY_TOTAL_JOBS)} totais (CME)</div>
   </div>
 </div>`;
 
@@ -1978,6 +2207,7 @@ ${mapImgSrc
 
     groups.forEach(group => {
         const groupStations = stations.filter(s => s.groupId === group.id);
+        if (groupStations.length === 0) return; // ocultar grupos vazios
         const grpPop5  = groupStations.reduce((s, st) => s + (st.population_5min  || 0), 0);
         const grpPop10 = groupStations.reduce((s, st) => s + (st.population_10min || 0), 0);
 
@@ -1985,7 +2215,7 @@ ${mapImgSrc
 <div class="group-header" style="border-color:${group.color};">
   <div class="group-dot" style="background:${group.color};"></div>
   <span class="group-title">${group.name}</span>
-  <span class="group-count">${groupStations.length} estação${groupStations.length !== 1 ? 'ões' : ''} &nbsp;·&nbsp; ${fmt(grpPop5)} hab. (5 min) &nbsp;·&nbsp; ${fmt(grpPop10)} hab. (10 min)</span>
+  <span class="group-count">${groupStations.length} ${groupStations.length !== 1 ? 'estações' : 'estação'} &nbsp;·&nbsp; ${fmt(grpPop5)} hab. (5 min) &nbsp;·&nbsp; ${fmt(grpPop10)} hab. (10 min)</span>
 </div>
 <table>
 <thead>
@@ -1997,7 +2227,7 @@ ${mapImgSrc
     <th>Pop. 10 min</th>
     <th>Empregos</th>
     <th>H (Shannon)</th>
-    <th>Classificação TOD</th>
+    <th>Perfil funcional</th>
     <th>Autossuficiência</th>
     <th>Sobreposições</th>
   </tr>
@@ -2032,22 +2262,61 @@ ${mapImgSrc
         html += `</tbody></table>`;
     });
 
+    // ── Underserved BGRIs section ─────────────────────────────
+    if (uncoveredList.length > 0) {
+        const totalUncovPop = uncoveredList.reduce((s, b) => s + b.population, 0);
+        html += `
+<h2>Zonas com menor cobertura de paragens</h2>
+<p style="font-size:11px;color:#718096;margin-bottom:10px;">
+  Subsecções estatísticas (BGRI) com população ≥ 50 habitantes não abrangidas por qualquer isócrona de 10 minutos.
+  Ordenadas por população residente (descendente).
+  Total não coberto: <strong>${fmt(totalUncovPop)} habitantes</strong>.
+</p>`;
+        if (uncovImgSrc) {
+            html += `<img class="map-img" src="${uncovImgSrc}" alt="Mapa de zonas sem cobertura de paragens" style="margin-bottom:14px;">`;
+        }
+        html += `
+<table>
+<thead>
+  <tr>
+    <th>#</th>
+    <th>BGRI</th>
+    <th>Pop. residente</th>
+    <th>Área (ha)</th>
+  </tr>
+</thead>
+<tbody>`;
+        uncoveredList.forEach((b, i) => {
+            const areaStr = b.area_ha != null ? b.area_ha.toFixed(1) : '—';
+            html += `<tr>
+  <td>${i + 1}</td>
+  <td class="coords">${b.id || '—'}</td>
+  <td style="font-weight:600;">${fmt(b.population)}</td>
+  <td>${areaStr}</td>
+</tr>`;
+        });
+        html += `</tbody></table>`;
+    }
+
     html += `
 </body>
 </html>`;
 
     // ── 5. Abrir em novo tab e imprimir ───────────────────────
-    const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    // O script de impressão está embutido no HTML gerado: dispara após window.onload
+    // + 1200 ms para garantir que todo o layout (tabelas extensas) está pintado.
+    const blobHtml = html.replace(
+        '</body>',
+        '<script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script></body>'
+    );
+    const blob = new Blob([blobHtml], { type: 'text/html;charset=utf-8' });
     const url  = URL.createObjectURL(blob);
     const tab  = window.open(url, '_blank');
-    if (tab) {
-        tab.addEventListener('load', () => {
-            setTimeout(() => { tab.print(); URL.revokeObjectURL(url); }, 400);
-        });
-    } else {
+    if (!tab) {
         alert('O browser bloqueou a abertura do relatório. Autorize popups para este site.');
-        URL.revokeObjectURL(url);
     }
+    // Revogar o URL após tempo suficiente para o tab carregar
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
 }
 
 // ============================================================

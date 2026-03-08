@@ -56,8 +56,10 @@ def process_census_data():
     gdf.to_file(output_file, driver="GeoJSON")
     
     # Criar um arquivo de metadados
+    total_pop = int(gdf[pop_column].sum()) if pop_column and pop_column in gdf.columns else 0
     metadata = {
         "pop_column": pop_column,
+        "total_pop": total_pop,
         "total_features": len(gdf),
         "bounds": {
             "minx": float(gdf.total_bounds[0]),
@@ -74,7 +76,6 @@ def process_census_data():
     print("\nProcessamento concluído!")
     print(f"Total de features: {len(gdf)}")
     if pop_column:
-        total_pop = gdf[pop_column].sum() if pop_column in gdf.columns else 0
         print(f"População total: {total_pop:,.0f}")
     
     return pop_column

@@ -154,6 +154,7 @@ html, body {
     display: none;
     flex: 1;
     overflow-y: auto;
+    position: relative;
 }
 
 .tab-content.active {
@@ -162,6 +163,60 @@ html, body {
 
 .sidebar-content {
     padding: 16px 20px;
+}
+
+/* ==================== Stations Loading Overlay ==================== */
+.stations-loading-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: rgba(255, 255, 255, 0.88);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 200;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+}
+
+.stations-loading-overlay.visible {
+    display: flex;
+}
+
+.stations-loading-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    padding: 28px 36px;
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.13);
+    border: 1px solid var(--c-border);
+    max-width: 260px;
+    text-align: center;
+}
+
+.stations-loading-spinner {
+    width: 38px;
+    height: 38px;
+    border: 4px solid var(--c-border);
+    border-top-color: var(--c-primary);
+    border-radius: 50%;
+    animation: stations-spin 0.8s linear infinite;
+    flex-shrink: 0;
+}
+
+@keyframes stations-spin {
+    to { transform: rotate(360deg); }
+}
+
+.stations-loading-msg {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--c-text-secondary);
+    line-height: 1.55;
+    margin: 0;
 }
 
 .instructions {
@@ -378,6 +433,47 @@ html, body {
 .stat-card.group-stat-card {
     padding: 12px 14px;
 }
+
+/* ==================== Coverage Card ==================== */
+.stat-card.coverage-card {
+    background: linear-gradient(135deg, rgba(56,161,105,.06) 0%, rgba(49,130,206,.06) 100%);
+    border-color: rgba(56,161,105,.3);
+}
+
+.coverage-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 4px;
+}
+
+.coverage-label {
+    font-size: var(--font-sm);
+    color: var(--c-text-secondary);
+}
+
+.coverage-value {
+    font-size: var(--font-sm);
+    font-weight: 700;
+    color: var(--c-text-primary);
+    text-align: right;
+}
+
+.coverage-bar-wrap {
+    background: var(--c-border);
+    border-radius: 9999px;
+    height: 5px;
+    margin-bottom: 10px;
+    overflow: hidden;
+}
+
+.coverage-bar {
+    height: 5px;
+    border-radius: 9999px;
+    background: linear-gradient(90deg, #38a169, #3182ce);
+    transition: width 0.5s ease;
+}
+
 
 .group-stat-header {
     display: flex;

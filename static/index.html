@@ -26,6 +26,13 @@
             
             <!-- ============ TAB: ESTAÇÕES ============ -->
             <div class="tab-content active" id="tab-stations">
+                <!-- Loading overlay shown during JSON/GTFS import until population is calculated -->
+                <div id="stations-loading-overlay" class="stations-loading-overlay">
+                    <div class="stations-loading-box">
+                        <div class="stations-loading-spinner"></div>
+                        <p class="stations-loading-msg" id="stations-loading-msg">A calcular isócronas…</p>
+                    </div>
+                </div>
                 <div class="sidebar-content">
                     <div class="instructions">
                         <p>📌 Clique no mapa para adicionar uma estação</p>
@@ -63,6 +70,25 @@
                                     <span class="breakdown-label">Área Secundária (10 min):</span>
                                     <span class="breakdown-value" id="total-pop-10min">0</span>
                                 </span>
+                            </div>
+                        </div>
+
+                        <!-- Coverage card -->
+                        <div class="stat-card coverage-card">
+                            <div class="stat-label">Cobertura da rede (raio 10 min)</div>
+                            <div class="coverage-row">
+                                <span class="coverage-label">Pop. abrangida</span>
+                                <span class="coverage-value" id="coverage-pop-value">—</span>
+                            </div>
+                            <div class="coverage-bar-wrap">
+                                <div class="coverage-bar" id="coverage-pop-bar" style="width:0%"></div>
+                            </div>
+                            <div class="coverage-row">
+                                <span class="coverage-label">Empregos estimados</span>
+                                <span class="coverage-value" id="coverage-jobs-value">—</span>
+                            </div>
+                            <div class="coverage-bar-wrap">
+                                <div class="coverage-bar" id="coverage-jobs-bar" style="width:0%"></div>
                             </div>
                         </div>
 
@@ -160,10 +186,10 @@
             <div id="map"></div>
             <div class="map-controls">
                 <button class="btn-clear" id="btn-clear">Limpar estações</button>
-                <button class="btn-save-project" id="btn-save-project">&#128190; Guardar</button>
-                <button class="btn-load-project" id="btn-load-project">&#128193; Carregar</button>
+                <button class="btn-save-project" id="btn-save-project">&#128190; Guardar JSON</button>
+                <button class="btn-load-project" id="btn-load-project">&#128193; Carregar JSON</button>
                 <input type="file" id="project-file-input" accept=".json" style="display: none;">
-                <button class="btn-import-gtfs" id="btn-import-gtfs">🚌 GTFS</button>
+                <button class="btn-import-gtfs" id="btn-import-gtfs">🚌 Carregar GTFS</button>
                 <input type="file" id="gtfs-file-input" accept=".zip" style="display:none;">
                 <button class="btn-export-report" id="btn-export-report">&#128196; Relatório</button>
             </div>

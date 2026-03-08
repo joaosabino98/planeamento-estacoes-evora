@@ -1,4 +1,4 @@
-# Agent Context — Mobilidade e Território (TOD Évora)
+# Agent Context — Mobilidade e Território (Évora — Cobertura Pedonal das Paragens)
 
 Quick reference for AI-assisted development. Read this before making changes.
 
@@ -6,20 +6,20 @@ Quick reference for AI-assisted development. Read this before making changes.
 
 ## Project in one paragraph
 
-Flask + GeoPandas backend serves census data and computes walking isochrones via OpenRouteService. A Leaflet frontend lets the user place transit stops (grouped, coloured), view 5/10-min walking catchments, inspect census subsections (BGRI), override their density, draw new urbanisation polygons, and compare baseline vs. projected population. The full state (groups, stations, BGRI overrides, urbanisations) is saved/loaded as a single JSON file.
+Flask + GeoPandas backend serves census data and computes walking isochrones via OpenRouteService. A Leaflet frontend lets the user place transit stops (grouped, coloured), view 5/10-min walking catchments (deduplicated — no double-counting between overlapping stations), inspect census subsections (BGRI), override their density, draw new urbanisation polygons, and compare baseline vs. projected population. Population and jobs totals are globalised using union-based geometry (server-side) and osm_id deduplication (client-side) to avoid double-counting across stations. The full state (groups, stations, BGRI overrides, urbanisations) is saved/loaded as a single JSON file. A printable coverage report (HTML → PDF via browser print) is generated client-side.
 
 ---
 
 ## File map
 
 ```
-server.py             Flask API — isochrones, population calc, CSV export/import
+server.py             Flask API — isochrones, population calc, jobs, city coverage
 process_data.py       One-time: converts BGRI .gpkg → data/census_data.geojson + metadata.json
 static/index.html     UI structure — sidebar tabs, floating edit panel, modals
 static/style.css      All styles
-static/app.js         All client logic (~1 780 lines)
-data/census_data.geojson   Pre-processed BGRI polygons (1 667 subsections)
-data/metadata.json         pop_column name and CRS info
+static/app.js         All client logic (~2 200 lines)
+data/census_data.geojson   Pre-processed BGRI polygons (1 667 subsections, EPSG:4326 / CRS84)
+data/metadata.json         pop_column, total_pop (53 577), bounds, column list
 data/isochrone_cache.json  Persisted ORS isochrone results (auto-created; never commit)
 BGRI2021_0705/        Raw source data (do not modify)
 ```
@@ -32,7 +32,7 @@ BGRI2021_0705/        Raw source data (do not modify)
 |---|---|---|
 | `/` | GET | Serves `static/index.html` |
 | `/api/census-geojson` | GET | Full census GeoJSON (streamed) |
-| `/api/census-metadata` | GET | `{pop_column, total_pop, crs, …}` |
+| `/api/census-metadata` | GET | `{pop_column, total_pop, total_features, bounds, columns}` |
 | `/api/isochrones` | POST | `{lat, lng}` → ORS isochrones (fallback: circles) |
 | `/api/population-in-isochrones` | POST | Main calc — see below |
 | `/api/export-points` | POST | Returns CSV of current stations |
@@ -69,11 +69,26 @@ BGRI2021_0705/        Raw source data (do not modify)
 4. For census intersections, **subtract** `urb_union` before attributing population (replacement semantics — urbanisations do not stack on top of existing census pop).
 5. Distribute urbanisation `estimatedPop` to isochrones proportionally by overlap fraction.
 6. Deduplicate overlapping isochrones from different stations by proximity to station centroid.
+7. Compute `uncovered_bgris` — BGRIs with no intersection with `union_10min` and `N_INDIVIDUOS ≥ 50`, sorted by pop descending, top 30. Added to response.
 
 **Key census fields:**
 - Population: `N_INDIVIDUOS` (resolved at startup into `POP_COLUMN`)
 - ID: `BGRI2021` → fallback `SUBSECCAO` → fallback `OBJECTID`
-- Area: `SHAPE_Area` (m²)
+- Area: `SHAPE_Area` (m², projected — divide by 10 000 for ha)
+
+**`/api/population-in-isochrones` response (additional fields):**
+```json
+{
+  "total_population_5min": 4200,
+  "total_population_10min": 1800,
+  "total_population": 6000,
+  "points": [ { "id", "lat", "lng", "population_5min", "population_10min", "population_total" } ],
+  "uncovered_bgris": [
+    { "id": "07052500113", "population": 312, "lat": 38.57, "lng": -7.91, "area_ha": 15.2 }
+  ]
+}
+```
+`uncovered_bgris` — sorted descending by population, max 30 entries, pop ≥ 50 threshold.
 
 ---
 
@@ -95,7 +110,17 @@ stationMarkers[]          // Leaflet marker instances (rebuilt by updateMap())
 isochroneLayers[]         // flat list of all isochrone Leaflet layers
 stationIsochroneLayers{}  // { stationId: [layer, layer] }
 
-// Isochrone request queue (serialises ORS calls, 350 ms gap between requests)
+// Population (union-based global totals, no double-counting)
+globalPopStats            // { total_population, total_population_5min, total_population_10min,
+                          //   uncovered_bgris: [{ id, population, lat, lng, area_ha }] }
+                          // Populated by calculatePopulation() after server response
+                          // Used by exportReport() and updateCoverageCard()
+
+// City-wide totals (coverage card)
+const CITY_TOTAL_JOBS = 23674  // CME Évora employment figure (hardcoded constant)
+let cityTotalPop = 0           // Loaded from /api/census-metadata at initMap() startup (53 577)
+
+// Isochrone request queue (serialises ORS calls, 350 ms gap between real requests)
 isochroneQueue[]          // stations waiting for isochrone fetch
 isochroneQueueRunning     // boolean — prevents concurrent queue runs
 
@@ -122,8 +147,8 @@ historyIndex
 | `initMap()` | Creates map, panes, draw control, wires all listeners |
 | `switchTab(tab)` | Switches UI tab; loads/removes census layer |
 | `updateMap()` | Rebuilds station markers; shows/hides isochrones; called on almost every state change |
-| `calculatePopulation()` | POSTs to `/api/population-in-isochrones`; updates sidebar |
-| `createIsochrones(station)` | Fetches isochrones; falls back to circles; caches on station object |
+| `calculatePopulation()` | POSTs to `/api/population-in-isochrones`; updates sidebar; populates `globalPopStats` (incl. `uncovered_bgris`) |
+| `createIsochrones(station)` | Fetches isochrones; falls back to circles; caches on station object; **returns `true` if served from disk cache** |
 | `drawCachedIsochrones(station, color)` | Draws from cache without re-fetching |
 | `loadCensusLayer()` | Fetches GeoJSON once, adds to `censusPane`, brings isochrones to front |
 | `selectCensusFeature(feature, layer)` | Highlights BGRI, populates floating edit panel |
@@ -133,7 +158,13 @@ historyIndex
 | `confirmUrbanization()` | Creates urb object, draws polygon + label marker, pushes to `newUrbanizations[]` |
 | `renameUrbanization(id, name)` | Updates `u.name`, calls `setIcon()` on `urb.layers[1]` (label marker) |
 | `saveProject()` | Serialises full state to JSON; downloads file |
-| `loadProject(event)` | Restores full state including scenario; re-creates visuals |
+| `loadProject(event)` | Restores full state including scenario; re-creates visuals; **shows loading overlay** until isochrones + population done |
+| `importGTFS(event)` | Parses GTFS zip; creates groups + stations; **shows loading overlay** until isochrones + population done |
+| `captureMapToImage(opts)` | **New helper.** Creates a hidden off-screen `<div>`, spins up a second Leaflet map, adds OSM tiles + optional isochrone outlines + station circle markers + numbered dot markers, waits for tiles (up to 2500ms), captures with `html2canvas`, destroys container. Returns `dataURL\|null`. Opts: `{bounds, width, height, stationMarkers[], isochroneFeatures[], labelledDots[]}`. Does NOT touch the live map. |
+| `exportReport()` | (1) Calls `captureMapToImage` for overview map (1120×630, station markers + 10-min isochrone outlines, group colours). (2) If `uncoveredList.length > 0`, calls `captureMapToImage` for uncovered map (900×506, numbered red dots at BGRI centroids). Both captures happen **before** HTML building. (3) Builds HTML with: 4-KPI summary, 2-KPI city coverage, scenario section, per-group tables, "Zonas com menor cobertura de paragens" section with map image + table (numbered dots match table rows). |
+| `showStationsLoading(msg)` | Shows `#stations-loading-overlay` over the Estações tab with a spinner and message |
+| `updateStationsLoadingMessage(msg)` | Updates the overlay message text (used for progress: `X / N`) |
+| `hideStationsLoading()` | Hides the loading overlay; called after `calculatePopulation()` in `runIsochroneQueue()` |
 | `saveState()` / `undo()` / `redo()` | History stack management |
 | `getCensusStyle(feature)` | Choropleth style; checks `densityOverrides` first |
 
@@ -246,15 +277,15 @@ H = -Σ pᵢ × log₂(pᵢ)          # Shannon entropy
 H_norm = H / log₂(N_categories) # Normalizado para [0, 1]
 ```
 
-Classificação TOD resultante:
+Classificação de perfil funcional resultante (função `compute_shannon_h` em `server.py`):
 
-| H_norm | Classificação |
-|---|---|
-| ≥ 0.80 | TOD Excelente |
-| ≥ 0.65 | TOD Bom |
-| ≥ 0.50 | TOD Moderado |
-| ≥ 0.35 | Em Transição |
-| < 0.35 | Monofuncional |
+| H_norm | Rácio empregos/pop | Perfil funcional |
+|---|---|---|
+| ≥ 0.60 | qualquer | Centralidade multifuncional |
+| ≥ 0.40 | ≥ 0.20 | Misto equilibrado |
+| qualquer | ≥ 0.50 | Nó de emprego |
+| ≥ 0.30 | qualquer | Misto desequilibrado |
+| < 0.30 | < 0.50 | Dormitório |
 
 ### Endpoint `/api/jobs-in-isochrones`
 
@@ -280,11 +311,11 @@ Classificação TOD resultante:
         "culture_leisure": 40, "food_beverage": 60, "industry": 20
       },
       "shannon_h": 0.72,
-      "tod_classification": "TOD Bom",
+      "tod_classification": "Centralidade multifuncional",
       "self_sufficiency": 0.58,
       "poi_count": 143,
       "low_coverage_warning": false,
-      "pois": [ { "lat", "lng", "category", "name", "jobs" } ]
+      "pois": [ { "lat", "lng", "category", "name", "jobs", "osm_id" } ]
     }
   ]
 }
@@ -312,7 +343,7 @@ let overlapData = {};      // { stationId: [{ withId, withName, areaFraction, sh
 | Função | O que faz |
 |---|---|
 | `calculateJobs()` | Async; chama `/api/jobs-in-isochrones`; popula `jobsData`; chama `updateJobsSummary()` + `updateSidebar()` + `computeOverlaps()` + `updateScenarioSummary()` se no tab de cenário |
-| `updateJobsSummary()` | Atualiza `#total-jobs` e `#avg-shannon-h` no painel global |
+| `updateJobsSummary()` | Atualiza `#total-jobs` e `#avg-shannon-h` no painel global; chama `updateCoverageCard()` |
 | `computeOverlaps()` | Usa Turf.js `intersect`+`area` para todos os pares de isócronas de 5 min; popula `overlapData`; limiar de reporte ≥ 10%; chama `updateSidebar()` |
 | `importGTFS(event)` | Async; lê `.zip`; POST `/api/import-gtfs`; limpa estado existente; cria grupos+estações; chama `updateMap()` que enfileira isócronas |
 | `enqueueIsochrone(station)` | Adiciona estação a `isochroneQueue` (deduplicado); inicia `runIsochroneQueue()` se parado |
@@ -320,7 +351,7 @@ let overlapData = {};      // { stationId: [{ withId, withName, areaFraction, sh
 | `renderPOILayer()` | Cria `L.circleMarker` por POI, com cor por categoria e popup com nome + categoria + empregos estimados |
 | `togglePOILayer()` | Exportada como `window.togglePOILayer`; alterna visibilidade de `jobsPOILayer` no mapa |
 | `calculatePopulation()` *(mod.)* | Chama `calculateJobs()` de forma não-bloqueante após atualizar a sidebar |
-| `updateSidebar()` *(mod.)* | Cada cartão de estação inclui agora uma secção `.station-jobs-section` com total de empregos, breakdown por categoria, barra de progresso H e classificação TOD |
+| `updateSidebar()` *(mod.)* | Cada cartão de estação inclui agora uma secção `.station-jobs-section` com total de empregos, breakdown por categoria, barra de progresso H e perfil funcional |
 | `updateScenarioSummary()` *(reescrito)* | Calcula ΔH usando helper local `shannonH()`; estima empregos adicionais a partir de área × `JOBS_PER_HA` para overrides de BGRI e novas urbanizações; mostra fallback quando `jobsData` está vazio |
 
 ### Paleta de cores dos POI
@@ -463,8 +494,13 @@ color: var(--c-text-muted);
 | Urbanisation label marker | Always at `urb.layers[1]`. Use `labelMarker.setIcon(L.divIcon({className:'', iconSize:null, …}))` to rename — do not remove/re-add unless necessary. |
 | BGRI ID resolution order | `props.BGRI2021` → `props.SUBSECCAO` → `props.OBJECTID`. Used consistently in both frontend and backend. |
 | Population dedup | When isochrones from different stations overlap, population is attributed to the station whose centroid is closest to the overlap centroid. |
-| Isochrone queue | `initializeStationIsochrones()` enfileira em `isochroneQueue[]` em vez de disparar diretamente. `runIsochroneQueue()` processa uma a uma com 350 ms de intervalo e chama `calculatePopulation()` quando termina. Não chamar `calculatePopulation()` fora deste fluxo quando existem estações sem isócrona. |
+| Isochrone queue | `initializeStationIsochrones()` enfileira em `isochroneQueue[]` em vez de disparar diretamente. `runIsochroneQueue()` processa uma a uma com 350 ms de intervalo **apenas para chamadas reais ao ORS** (cache hits não introduzem atraso); chama `calculatePopulation()` quando termina; depois chama `hideStationsLoading()`. Não chamar `calculatePopulation()` fora deste fluxo quando existem estações sem isócrona. |
 | Fallback não é cacheado | Apenas resultados reais do ORS são guardados em `data/isochrone_cache.json`. O fallback circular **nunca** deve ser persistido em cache — se for guardado, pedidos subsequentes receberão círculos em vez das isócronas reais. |
+| Population dedup (global) | Os totais globais de população usam a união das isócronas no servidor (`union_5min`, `union_10min`), eliminando dupla contagem entre estações com áreas sobrepostas. Os valores por estação continuam a usar Voronoi. `globalPopStats` (frontend) guarda os totais da última resposta do servidor; `exportReport()` usa-os para os KPIs globais. |
+| Jobs dedup (global) | `updateJobsSummary()` e `exportReport()` des-duplicam POIs por `osm_id` usando um `Map` antes de somar empregos. Cada POI no endpoint `/api/jobs-in-isochrones` inclui `osm_id` no formato `"{type}_{osm_id}"`. Quando não há `osm_id`, cai back para soma naive. |
+| City coverage | `CITY_TOTAL_JOBS=23674` (constante CME). `cityTotalPop` (53 577) carregado em `initMap()` via `fetch('/api/census-metadata')`. Coverage card no sidebar mostra % de pop e empregos da cidade cobertos pela rede actual. Relatório inclui linha adicional de 2 KPIs de cobertura + "Zonas com menor cobertura de paragens" (mapa 900×506 com pontos numerados + tabela BGRI, pop ≥ 50, top 30). |
+| Map capture | `captureMapToImage` cria um `<div>` off-screen, instancia um Leaflet separado, adiciona OSM + camadas, aguarda tiles (máx 2500ms), captura com html2canvas, destrói o container. **Não perturba o mapa activo** (sem resize, sem esconder camadas, sem invalidateSize). Usar sempre este helper para qualquer captura de mapa em relativos. |
+| Loading overlay | Ao iniciar `importGTFS()` ou `loadProject()`, `showStationsLoading()` é chamado antes de `updateMap()`; `hideStationsLoading()` é chamado no final de `runIsochroneQueue()` após `calculatePopulation()`. O overlay é um `position:absolute` dentro de `#tab-stations`; sem efeito quando não há isocronas a calcular (estações singulares não activam o overlay). |
 | GTFS substitui, não adiciona | `importGTFS()` limpa `stations`, `groups`, `activeGroupId`, `isochroneQueue`, `overlapData` e `jobsData` antes de importar. Chama `saveState()` previamente para suportar undo. |
 | name em stations | O campo `name` nas estações é `null` para paragens manuais; contém o nome da paragem GTFS quando importado. É serializado no JSON do projeto e restaurado no load. |
 
