@@ -2,6 +2,8 @@
 
 Ferramenta web interativa para avaliar a cobertura pedonal de redes de transporte público em Évora. Permite colocar paragens/estações no mapa, calcular isócronas reais a pé de 5 e 10 minutos, estimar a população e o emprego abrangidos por cada área de captação, e simular cenários de densificação urbana para comparar alternativas de localização.
 
+<img width="1317" height="800" alt="Screenshot da ferramenta com a rede TREVO importada" src="https://github.com/user-attachments/assets/8d5e2994-7795-4fce-aa4e-806928438ced" />
+
 ## Funcionalidades
 
 ### Planeamento de paragens / estações
