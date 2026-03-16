@@ -1101,8 +1101,8 @@ function updateCoverageCard() {
     const jobsBar = document.getElementById('coverage-jobs-bar');
     if (!popEl) return;
 
-    // Pop abrangida = total 5min + 10min (sem dupla contagem, vem do servidor)
-    const coveredPop = globalPopStats.total_population || 0;
+    // Pop abrangida = isócrona de 5 min (sem dupla contagem, vem do servidor)
+    const coveredPop = globalPopStats.total_population_5min || 0;
     if (cityTotalPop > 0 && coveredPop > 0) {
         const pct = Math.min(100, (coveredPop / cityTotalPop) * 100);
         popEl.textContent  = `${formatNumber(coveredPop)} (${pct.toFixed(1)}%)`;
