@@ -149,14 +149,21 @@ Após confirmação:
    EOF
    ```
 
-4. Criar a release. O título é apenas o número da versão (sem prefixo `v`). Para `major`, usar `--target main`; para os outros, deixar o `gh` usar `HEAD` da branch atual:
+4. Criar a release. O título é apenas o número da versão (sem prefixo `v`). **Passar sempre `--target <branch>` explicitamente** — sem ele, o `gh` usa a branch *default* do repo (`main`), não a branch local em que estás, e a tag fica no commit errado. Confirmar primeiro a branch atual com `git rev-parse --abbrev-ref HEAD` e usar esse valor (`main` para `major` após o fast-forward, `develop` para `patch`/`minor` feitas a partir de `develop`):
+
    ```bash
-   # major (depois de fast-forward de main)
-   gh release create <nova> --target main --title "<nova>" --notes-file /tmp/release-<nova>.md
-   # patch / minor
-   gh release create <nova> --title "<nova>" --notes-file /tmp/release-<nova>.md
+   BRANCH=$(git rev-parse --abbrev-ref HEAD)
+   gh release create <nova> --target "$BRANCH" --title "<nova>" --notes-file /tmp/release-<nova>.md
    ```
-   Isto cria automaticamente a tag `<nova>` no commit alvo.
+
+   Isto cria automaticamente a tag `<nova>` no `HEAD` da branch alvo. Confirmar logo de seguida que ficou no commit certo:
+
+   ```bash
+   gh release view <nova> --json tagName,targetCommitish
+   git rev-parse "$BRANCH" && git rev-list -n 1 <nova>
+   ```
+
+   Os dois SHAs têm de coincidir. Se não coincidirem, apagar com `gh release delete <nova> --cleanup-tag --yes` e recriar com o `--target` certo.
 
 5. Confirmar com o utilizador, mostrando o URL devolvido pelo `gh`.
 
