@@ -218,6 +218,19 @@ CITY_TOTAL_JOBS = int(os.getenv('CITY_TOTAL_JOBS', '23674'))   # SCIE Évora 202
 WALKING_SPEED_MS = 1.39                                          # ~5 km/h
 DEFAULT_RANGES_S = [300, 600]                                    # 5 min, 10 min
 
+# ==================== Constantes geométricas / fallback ====================
+# Raios usados quando uma estação ainda não tem isócrona ORS (fallback circular).
+# Valores fixos (não derivados) para preservar comportamento exato do código original
+# antes da refatorização: WALKING_SPEED_MS × DEFAULT_RANGES_S daria 417 / 834 m.
+RADIUS_5MIN_M = 417
+RADIUS_10MIN_M = 833
+# Conversão aproximada metros → graus de latitude (1° lat ≈ 111 km)
+METERS_PER_DEGREE = 111000
+# Proxy de população ativa (Évora 2021): ≈ 45 % dos residentes
+ACTIVE_POPULATION_RATIO = 0.45
+# BGRIs com população < UNCOVERED_MIN_POP não entram na lista de não cobertas
+UNCOVERED_MIN_POP = 50
+
 # ==================== Overpass Cache (in-memory) ====================
 # Cache curto (bbox arredondado) para evitar bater repetidamente no Overpass
 # durante recalculations sucessivos.
@@ -238,6 +251,40 @@ def _isochrone_cache_key(lat, lng, ranges=None):
     """Stable key rounded to ~1 m precision; inclui ranges para evitar colisões."""
     rng = ','.join(str(int(r)) for r in (ranges or DEFAULT_RANGES_S))
     return f"{round(float(lat), 5)},{round(float(lng), 5)}|{rng}"
+
+
+def _request_with_backoff(
+    url,
+    *,
+    method='post',
+    json=None,
+    data=None,
+    headers=None,
+    timeout=15,
+    attempts=3,
+    retry_status=(429, 500, 502, 503, 504),
+    backoff_base=0.6,
+    label=None,
+):
+    """HTTP request com retry exponencial em rate-limit (429) e 5xx.
+
+    Devolve a última ``Response`` (que pode ser não-OK se todos os retries falharem)
+    ou levanta a excepção do `requests` no caso de falha de rede.
+    """
+    response = None
+    tag = label or url.split('/')[2] if '://' in url else (label or url)
+    for attempt in range(attempts):
+        response = requests.request(
+            method, url,
+            json=json, data=data, headers=headers, timeout=timeout,
+        )
+        if response.status_code in retry_status:
+            wait = backoff_base * (2 ** attempt)
+            print(f"{tag} {response.status_code}, retry em {wait:.1f}s")
+            time.sleep(wait)
+            continue
+        break
+    return response
 
 
 def load_isochrone_cache():
@@ -401,15 +448,9 @@ def get_isochrones():
         }
 
         # Pequeno retry com backoff para 429/5xx
-        response = None
-        for attempt in range(3):
-            response = requests.post(url, json=body, headers=headers, timeout=15)
-            if response.status_code in (429, 500, 502, 503, 504):
-                wait = 0.6 * (2 ** attempt)
-                print(f"ORS {response.status_code}, retry em {wait:.1f}s")
-                time.sleep(wait)
-                continue
-            break
+        response = _request_with_backoff(
+            url, method='post', json=body, headers=headers, timeout=15, label='ORS',
+        )
 
         if response is not None and response.status_code == 200:
             result = response.json()
@@ -435,16 +476,11 @@ def get_isochrones():
 
 def create_fallback_isochrones(lat, lng, ranges):
     """Cria isócronas usando círculos como fallback"""
-    # Velocidade a pé: ~5 km/h = ~1.39 m/s
-    speed_ms = 1.39
-
     isochrones = []
     for range_seconds in ranges:
-        # Calcular raio em metros
-        radius_m = range_seconds * speed_ms
-
-        # Converter para graus (aproximação): 1 grau de latitude ≈ 111 km
-        radius_deg = radius_m / 111000
+        # Calcular raio em metros e converter para graus (1° lat ≈ 111 km)
+        radius_m = range_seconds * WALKING_SPEED_MS
+        radius_deg = radius_m / METERS_PER_DEGREE
 
         center = [lng, lat]
         num_points = 64
@@ -498,8 +534,8 @@ def calculate_population():
     # Velocidade a pé: ~5 km/h = ~83 m/min = ~1.39 m/s
     # 5 minutos = 300 segundos, 10 minutos = 600 segundos
     # Raio aproximado: 5 min = ~417 metros, 10 min = ~833 metros
-    radius_5min = 417  # metros (fallback)
-    radius_10min = 833  # metros (fallback)
+    radius_5min = RADIUS_5MIN_M    # metros (fallback)
+    radius_10min = RADIUS_10MIN_M  # metros (fallback)
     
     # Preparar dados dos pontos e suas isócronas
     point_info = []
@@ -869,8 +905,7 @@ def calculate_population():
                 print(f"Aviso: falha ao calcular totais para grupo {gid}: {e}")
 
 
-    # ── Compute uncovered BGRIs (pop ≥ 50, not intersecting any isochrone) ──
-    UNCOVERED_MIN_POP = 50
+    # ── Compute uncovered BGRIs (pop ≥ UNCOVERED_MIN_POP, not intersecting any isochrone) ──
     # Limite configurável pelo cliente (querystring), com cap de segurança
     try:
         uncovered_limit = int(request.args.get('uncovered_limit', '30'))
@@ -929,8 +964,8 @@ def jobs_in_isochrones():
         return jsonify({'stations': []})
 
     # ── 1. Build per-station isochrone geometries (WGS84) ──────────────────
-    radius_5min_deg  = 417  / 111000   # fallback circle in degrees
-    radius_10min_deg = 833  / 111000
+    radius_5min_deg  = RADIUS_5MIN_M  / METERS_PER_DEGREE   # fallback circle in degrees
+    radius_10min_deg = RADIUS_10MIN_M / METERS_PER_DEGREE
 
     station_geoms = []
     all_geoms = []
@@ -1005,18 +1040,16 @@ def jobs_in_isochrones():
                 'User-Agent': 'planeamento-estacoes-evora/1.0 (https://github.com/; contacto via repositório)',
                 'Accept': 'application/json',
             }
-            resp = None
-            for attempt in range(3):
-                resp = requests.post(
-                    overpass_url,
-                    data={'data': overpass_query},
-                    headers=overpass_headers,
-                    timeout=35,
-                )
-                if resp.status_code in (429, 502, 503, 504):
-                    time.sleep(0.8 * (2 ** attempt))
-                    continue
-                break
+            resp = _request_with_backoff(
+                overpass_url,
+                method='post',
+                data={'data': overpass_query},
+                headers=overpass_headers,
+                timeout=35,
+                retry_status=(429, 502, 503, 504),
+                backoff_base=0.8,
+                label='Overpass',
+            )
             if resp is not None:
                 resp.raise_for_status()
                 elements = resp.json().get('elements', [])
@@ -1103,7 +1136,7 @@ def jobs_in_isochrones():
         h_norm, classification = compute_shannon_h(residents, breakdown)
 
         # Self-sufficiency index: jobs / active population proxy
-        active_pop = residents * 0.45   # ~45% of residents are economically active (Évora 2021)
+        active_pop = residents * ACTIVE_POPULATION_RATIO
         if active_pop > 0:
             self_sufficiency = round(jobs_total / active_pop, 3)
         elif jobs_total > 0:
@@ -1271,7 +1304,7 @@ def get_config():
         'city_total_jobs': CITY_TOTAL_JOBS,
         'walking_speed_ms': WALKING_SPEED_MS,
         'default_ranges_s': DEFAULT_RANGES_S,
-        'uncovered_min_pop': 50,
+        'uncovered_min_pop': UNCOVERED_MIN_POP,
     })
 
 

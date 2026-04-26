@@ -87,6 +87,35 @@ const MAX_HISTORY = 50;
 let isSavingState = false;
 
 // ============================================================
+//                       FETCH HELPER
+// ============================================================
+/**
+ * Wrapper sobre fetch() para chamadas JSON. Centraliza headers e error handling.
+ *
+ * @param {string} url
+ * @param {object} [opts]
+ * @param {string} [opts.method='GET']
+ * @param {object} [opts.body]    Objeto a serializar como JSON (define POST por omissão)
+ * @returns {Promise<object>}     JSON desserializado
+ * @throws  {Error}               Se a resposta não for OK ou houver erro de rede
+ */
+async function fetchJSON(url, opts = {}) {
+    const method = opts.method || (opts.body !== undefined ? 'POST' : 'GET');
+    const init = { method };
+    if (opts.body !== undefined) {
+        init.headers = { 'Content-Type': 'application/json' };
+        init.body = JSON.stringify(opts.body);
+    }
+    const res = await fetch(url, init);
+    if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try { const j = await res.json(); if (j && j.error) msg = j.error; } catch {}
+        throw new Error(msg);
+    }
+    return res.json();
+}
+
+// ============================================================
 //                       INITIALIZATION
 // ============================================================
 function initMap() {
@@ -858,14 +887,7 @@ async function calculatePopulation(triggerJobs = true) {
             }));
         }
 
-        const response = await fetch('/api/population-in-isochrones', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) throw new Error('Erro ao calcular população');
-        const data = await response.json();
+        const data = await fetchJSON('/api/population-in-isochrones', { body: payload });
 
         stations = stations.map(station => {
             const pd = data.points.find(p => String(p.id) === String(station.id));
@@ -914,13 +936,7 @@ async function calculateJobs() {
 
     let success = true;
     try {
-        const resp = await fetch('/api/jobs-in-isochrones', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
-        });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const data = await resp.json();
+        const data = await fetchJSON('/api/jobs-in-isochrones', { body: payload });
         jobsData = {};
         (data.stations || []).forEach(s => { jobsData[String(s.id)] = s; });
     } catch (e) {
@@ -1194,15 +1210,114 @@ function updateCoverageCard() {
     }
 }
 
-function updateSidebar() {
-    // Per-group stats — usar totais do servidor (união, sem dupla contagem dentro do grupo).
-    // Fallback para soma por estação só se o servidor ainda não respondeu.
+// ─── Categorias de empregos (rótulos PT) ──────────────────────────────────
+const JOB_CATEGORY_LABELS = {
+    commerce:         'Comércio',
+    services:         'Serviços',
+    education_health: 'Educação / Saúde',
+    culture_leisure:  'Cultura / Lazer',
+    industry:         'Indústria',
+};
+
+/**
+ * HTML do bloco de empregos (Shannon H + auto-suficiência) para uma estação.
+ * @param {object|null} jd  Dados de empregos (entrada de jobsData[stationId]) ou undefined.
+ * @returns {string}        HTML pronto a injetar; vazio se sem dados.
+ */
+function renderJobsSection(jd) {
+    if (!jd) return '';
+    const hPct    = Math.round((jd.shannon_h || 0) * 100);
+    const hColor  = jd.shannon_h >= 0.6 ? '#38a169' : jd.shannon_h >= 0.3 ? '#d69e2e' : '#e53e3e';
+    const ssColor = jd.self_sufficiency >= 0.4 ? '#38a169' : jd.self_sufficiency >= 0.2 ? '#d69e2e' : '#e53e3e';
+    const breakdown = Object.entries(jd.jobs_breakdown || {})
+        .filter(([, v]) => v > 0)
+        .sort(([, a], [, b]) => b - a)
+        .map(([k, v]) =>
+            `<div class="station-stat-row"><span class="station-stat-label">&nbsp;↳ ${JOB_CATEGORY_LABELS[k] || k}:</span><span class="station-stat-value">${formatNumber(v)}</span></div>`
+        ).join('');
+    const warning = jd.low_coverage_warning
+        ? `<div class="jobs-warning">⚠️ Cobertura OSM limitada — estimativa indicativa (${jd.poi_count} POIs)</div>` : '';
+    return `
+        <div class="station-jobs-section">
+            <div class="station-jobs-header">Empregos estimados (5 min)</div>
+            ${warning}
+            <div class="station-stat-row">
+                <span class="station-stat-label">Total empregos:</span>
+                <span class="station-stat-value">${formatNumber(jd.jobs_total)}</span>
+            </div>
+            ${breakdown}
+            <div class="station-stat-row" style="margin-top:6px;">
+                <span class="station-stat-label">Mix de usos (H):</span>
+                <span class="station-stat-value" style="color:${hColor};font-weight:700;">${jd.shannon_h.toFixed(2)} <span style="font-size:10px;font-weight:400;">(${jd.tod_classification})</span></span>
+            </div>
+            <div class="h-bar-bg"><div class="h-bar-fill" style="width:${hPct}%;background:${hColor};"></div></div>
+            <div class="station-stat-row">
+                <span class="station-stat-label">Auto-suficiência:</span>
+                <span class="station-stat-value" style="color:${ssColor};font-weight:700;">${jd.self_sufficiency.toFixed(2)}</span>
+            </div>
+        </div>
+    `;
+}
+
+/**
+ * HTML dos badges de sobreposição entre isócronas de 5 min.
+ * @param {Array} overlaps  Lista de objetos { withName, areaFraction, sharedPop } ou vazia.
+ */
+function renderOverlapBadges(overlaps) {
+    if (!overlaps || overlaps.length === 0) return '';
+    return overlaps.map(ov => {
+        const pct = Math.round(ov.areaFraction * 100);
+        const cls = ov.areaFraction >= 0.4 ? 'danger' : 'warning';
+        const icon = cls === 'danger' ? '⛔' : '⚠️';
+        const popNote = ov.sharedPop > 0 ? ' · ' + formatNumber(ov.sharedPop) + ' hab' : '';
+        return `<div class="overlap-badge ${cls}">${icon} Sobreposição com ${escapeHtml(ov.withName)}: ${pct}% área${popNote}</div>`;
+    }).join('');
+}
+
+/**
+ * HTML completo de um cartão de estação no painel lateral.
+ * @param {object} station
+ * @param {number} index   Índice na lista (1-based para o nome default).
+ */
+function renderStationCard(station, index) {
+    const group = getGroupForStation(station);
+    const pop5  = station.population_5min  || 0;
+    const pop10 = station.population_10min || 0;
+    const popT  = station.population_total || 0;
+    const hasError = station.isochroneError;
+
+    const jobsHtml = renderJobsSection(jobsData[String(station.id)]);
+    const overlapBadgesHtml = renderOverlapBadges(overlapData[String(station.id)]);
+
+    return `
+        <div class="station-item ${hasError ? 'station-error' : ''}">
+            <div class="station-item-header">
+                <span class="station-name"><span class="station-group-dot" style="background:${group.color}"></span> ${escapeHtml(station.name || ('Estação ' + (index + 1)))}${hasError ? ' ⚠️' : ''}</span>
+                <button class="btn-remove" onclick="removeStation(${station.id})" title="Remover">×</button>
+            </div>
+            ${hasError ? `<div style="background:#fed7d7;color:#c53030;padding:8px;border-radius:4px;margin-bottom:8px;font-size:12px;">⚠️ ${station.isochroneError}</div>` : ''}
+            <div class="station-stats">
+                <div class="station-stat-row"><span class="station-stat-label">Área Primária (5 min):</span><span class="station-stat-value">${formatNumber(pop5)}</span></div>
+                <div class="station-stat-row"><span class="station-stat-label">Área Secundária (10 min):</span><span class="station-stat-value">${formatNumber(pop10)}</span></div>
+                <div class="station-stat-row" style="border-top:2px solid #e2e8f0;margin-top:4px;padding-top:8px;font-weight:600;"><span class="station-stat-label">Total:</span><span class="station-stat-value">${formatNumber(popT)}</span></div>
+            </div>
+            ${jobsHtml}
+            ${overlapBadgesHtml}
+        </div>
+    `;
+}
+
+/**
+ * HTML dos cartões "estatísticas por linha" no topo do painel.
+ * Usa totais por união do servidor (groups[]) com fallback para soma por estação
+ * apenas quando o backend ainda não respondeu.
+ */
+function renderGroupStats() {
     const groupTotalsById = {};
     if (globalPopStats && Array.isArray(globalPopStats.groups)) {
         globalPopStats.groups.forEach(g => { groupTotalsById[g.id] = g; });
     }
-    const groupStatsContainer = document.getElementById('group-stats-container');
-    groupStatsContainer.innerHTML = groups.map(g => {
+    return groups.map(g => {
         const groupStations = stations.filter(s => s.groupId === g.id);
         if (groupStations.length === 0) return '';
         const t = groupTotalsById[g.id];
@@ -1224,91 +1339,17 @@ function updateSidebar() {
             </div>
         `;
     }).join('');
+}
 
-    // Station cards
+function updateSidebar() {
+    document.getElementById('group-stats-container').innerHTML = renderGroupStats();
+
     const container = document.getElementById('stations-container');
     if (stations.length === 0) {
         container.innerHTML = '<p class="no-stations">Nenhuma estação adicionada</p>';
         return;
     }
-
-    const CAT_LABELS = {
-        commerce:         'Comércio',
-        services:         'Serviços',
-        education_health: 'Educação / Saúde',
-        culture_leisure:  'Cultura / Lazer',
-        industry:         'Indústria',
-    };
-
-    container.innerHTML = stations.map((station, index) => {
-        const group = getGroupForStation(station);
-        const pop5 = station.population_5min || 0;
-        const pop10 = station.population_10min || 0;
-        const popT = station.population_total || 0;
-        const hasError = station.isochroneError;
-
-        const jd = jobsData[String(station.id)];
-        let jobsHtml = '';
-        if (jd) {
-            const hPct    = Math.round((jd.shannon_h || 0) * 100);
-            const hColor  = jd.shannon_h >= 0.6 ? '#38a169' : jd.shannon_h >= 0.3 ? '#d69e2e' : '#e53e3e';
-            const ssColor = jd.self_sufficiency >= 0.4 ? '#38a169' : jd.self_sufficiency >= 0.2 ? '#d69e2e' : '#e53e3e';
-            const breakdown = Object.entries(jd.jobs_breakdown || {})
-                .filter(([, v]) => v > 0)
-                .sort(([, a], [, b]) => b - a)
-                .map(([k, v]) =>
-                    `<div class="station-stat-row"><span class="station-stat-label">&nbsp;↳ ${CAT_LABELS[k] || k}:</span><span class="station-stat-value">${formatNumber(v)}</span></div>`
-                ).join('');
-            const warning = jd.low_coverage_warning
-                ? `<div class="jobs-warning">⚠️ Cobertura OSM limitada — estimativa indicativa (${jd.poi_count} POIs)</div>` : '';
-            jobsHtml = `
-                <div class="station-jobs-section">
-                    <div class="station-jobs-header">Empregos estimados (5 min)</div>
-                    ${warning}
-                    <div class="station-stat-row">
-                        <span class="station-stat-label">Total empregos:</span>
-                        <span class="station-stat-value">${formatNumber(jd.jobs_total)}</span>
-                    </div>
-                    ${breakdown}
-                    <div class="station-stat-row" style="margin-top:6px;">
-                        <span class="station-stat-label">Mix de usos (H):</span>
-                        <span class="station-stat-value" style="color:${hColor};font-weight:700;">${jd.shannon_h.toFixed(2)} <span style="font-size:10px;font-weight:400;">(${jd.tod_classification})</span></span>
-                    </div>
-                    <div class="h-bar-bg"><div class="h-bar-fill" style="width:${hPct}%;background:${hColor};"></div></div>
-                    <div class="station-stat-row">
-                        <span class="station-stat-label">Auto-suficiência:</span>
-                        <span class="station-stat-value" style="color:${ssColor};font-weight:700;">${jd.self_sufficiency.toFixed(2)}</span>
-                    </div>
-                </div>
-            `;
-        }
-
-        const overlaps = overlapData[String(station.id)] || [];
-        const overlapBadgesHtml = overlaps.length === 0 ? '' : overlaps.map(ov => {
-            const pct = Math.round(ov.areaFraction * 100);
-            const cls = ov.areaFraction >= 0.4 ? 'danger' : 'warning';
-            const icon = cls === 'danger' ? '⛔' : '⚠️';
-            const popNote = ov.sharedPop > 0 ? ' · ' + formatNumber(ov.sharedPop) + ' hab' : '';
-            return `<div class="overlap-badge ${cls}">${icon} Sobreposição com ${escapeHtml(ov.withName)}: ${pct}% área${popNote}</div>`;
-        }).join('');
-
-        return `
-            <div class="station-item ${hasError ? 'station-error' : ''}">
-                <div class="station-item-header">
-                    <span class="station-name"><span class="station-group-dot" style="background:${group.color}"></span> ${escapeHtml(station.name || ('Estação ' + (index + 1)))}${hasError ? ' ⚠️' : ''}</span>
-                    <button class="btn-remove" onclick="removeStation(${station.id})" title="Remover">×</button>
-                </div>
-                ${hasError ? `<div style="background:#fed7d7;color:#c53030;padding:8px;border-radius:4px;margin-bottom:8px;font-size:12px;">⚠️ ${station.isochroneError}</div>` : ''}
-                <div class="station-stats">
-                    <div class="station-stat-row"><span class="station-stat-label">Área Primária (5 min):</span><span class="station-stat-value">${formatNumber(pop5)}</span></div>
-                    <div class="station-stat-row"><span class="station-stat-label">Área Secundária (10 min):</span><span class="station-stat-value">${formatNumber(pop10)}</span></div>
-                    <div class="station-stat-row" style="border-top:2px solid #e2e8f0;margin-top:4px;padding-top:8px;font-weight:600;"><span class="station-stat-label">Total:</span><span class="station-stat-value">${formatNumber(popT)}</span></div>
-                </div>
-                ${jobsHtml}
-                ${overlapBadgesHtml}
-            </div>
-        `;
-    }).join('');
+    container.innerHTML = stations.map((s, i) => renderStationCard(s, i)).join('');
 }
 
 // ============================================================
@@ -1318,9 +1359,7 @@ async function loadCensusLayer() {
     if (censusLayer) return; // already loaded
 
     try {
-        const res = await fetch('/api/census-geojson');
-        if (!res.ok) throw new Error('Erro ao carregar GeoJSON');
-        censusGeoJSON = await res.json();
+        censusGeoJSON = await fetchJSON('/api/census-geojson');
 
         censusLayer = L.geoJSON(censusGeoJSON, {
             pane: 'censusPane',

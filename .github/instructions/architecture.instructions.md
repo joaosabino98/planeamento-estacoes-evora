@@ -95,13 +95,27 @@ Response per station:
 3. `classify_poi_tags(el_type, tags) → (category, jobs_estimate)`.
 4. Filter by point-in-polygon against each isochrone.
 5. Compute `shannon_h` via `compute_shannon_h(residents, breakdown)` → `(h_norm, classification)`.
-6. `self_sufficiency = jobs_total / (residents_5min × 0.45)`; returns `1.0` when `residents = 0` and `jobs > 0` (do **not** revert to `0.0`).
+6. `self_sufficiency = jobs_total / (residents_5min × ACTIVE_POPULATION_RATIO)`; returns `1.0` when `residents = 0` and `jobs > 0` (do **not** revert to `0.0`).
 7. `low_coverage_warning = poi_count < 10`.
+
+**Constantes globais** (server.py, no topo):
+
+| Nome | Valor | Uso |
+|---|---|---|
+| `RADIUS_5MIN_M` | `417` | Raio fallback (m) quando ORS falha — 5 min |
+| `RADIUS_10MIN_M` | `833` | Raio fallback (m) quando ORS falha — 10 min |
+| `METERS_PER_DEGREE` | `111000` | Conversão aproximada para fallbacks circulares |
+| `ACTIVE_POPULATION_RATIO` | `0.45` | Proxy população ativa (Évora 2021) |
+| `UNCOVERED_MIN_POP` | `50` | Limite de inclusão na lista de BGRIs não cobertas |
+| `WALKING_SPEED_MS` | `1.39` | ~5 km/h |
+| `DEFAULT_RANGES_S` | `[300, 600]` | 5 min, 10 min em segundos |
 
 **`JOBS_PER_HA`** (server.py constants):
 ```python
 { 'industrial': 20, 'commercial': 40, 'retail': 40 }
 ```
+
+**`_request_with_backoff(url, *, method, json, data, headers, timeout, retry_status, backoff_base, label)`** — helper centralizado para chamadas HTTP com retry exponencial em 429/5xx. Usado em `/api/isochrones` (ORS), `/api/jobs-in-isochrones` (Overpass) e qualquer chamada externa. Devolve a `Response` final ou levanta `requests.RequestException`.
 
 **Per-POI estimates** (fallback when not a `landuse` polygon): `commerce=3`, `services=5`, `education_health=15–25`, `culture_leisure=4`, `food_beverage=4`.
 
@@ -193,6 +207,8 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `calculatePopulation(triggerJobs=true)` | POSTs to backend; updates `globalPopStats`; calls `renderUncoveredBgris()`; with `triggerJobs=false` skips automatic jobs run (queue runner uses this) |
 | `calculateJobs()` | POSTs to backend; populates `jobsData`; calls `updateJobsSummary()`, `updateSidebar()`, `computeOverlaps()`, `updateScenarioSummary()` if on scenario tab. Returns `true`/`false`. |
 | `updateJobsSummary()` / `updateCoverageCard()` | Updates `#total-jobs`, `#avg-shannon-h`, coverage bars; **dedupes POIs by `osm_id`** |
+| `updateSidebar()` | Orquestrador. Delega em `renderGroupStats()` (cartões por linha, união do servidor com fallback por estação), `renderStationCard(s, i)` (cartão completo), `renderJobsSection(jd)` (Shannon H + breakdown), `renderOverlapBadges(overlaps)`. |
+| `fetchJSON(url, opts)` | Helper de rede para GET/POST JSON. Usado em `calculatePopulation`, `calculateJobs`, `loadCensusLayer`. Lança `Error` com mensagem do servidor (`error` field) ou `HTTP <status>` quando não-OK. |
 | `computeOverlaps()` | Turf intersect+area between all 5-min isochrone pairs; reports when ≥ 10 % |
 | `loadCensusLayer()` | Fetches GeoJSON once; adds to `censusPane`; brings isochrones to front |
 | `getCensusStyle(f)` | Choropleth; checks `densityOverrides` first |
