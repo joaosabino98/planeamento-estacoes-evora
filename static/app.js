@@ -1997,13 +1997,21 @@ async function loadProject(event) {
         stationMarkers = [];
         stationIsochroneLayers = {};
         isochroneLayers = [];
-        showStationsLoading(`A recarregar isócronas para ${stations.length} estação(ões)…`);
+        if (stations.length > 0) {
+            showStationsLoading(`A recarregar isócronas para ${stations.length} estação(ões)…`);
+        } else {
+            hideStationsLoading();
+        }
         renderGroups();
         updateMap();
         updateSidebar();
         renderUrbanizations();
         updateScenarioSummary();
         saveState();
+        // No stations to enqueue → refresh global totals directly so the coverage card reflects density/urbanisation changes
+        if (stations.length === 0) {
+            await calculatePopulation(false);
+        }
 
         const urbs = project.newUrbanizations ? project.newUrbanizations.length : 0;
         const overrides = Object.keys(project.densityOverrides || {}).length;
