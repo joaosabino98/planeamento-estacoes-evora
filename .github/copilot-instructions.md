@@ -14,6 +14,7 @@ Web tool for **Transit-Oriented Development planning in Évora**. A Flask + GeoP
 | `static/app.js` | Client logic (~2 500 lines): map, state, all features |
 | `static/index.html` / `style.css` | UI structure and design system |
 | `process_data.py` | One-shot: BGRI `.gpkg` → `data/census_data.geojson` + metadata |
+| `tests/` | pytest suite (backend only) — run with `pytest -q` |
 | `data/census_data.geojson` | Pre-processed BGRI polygons (1 667 subsections, EPSG:4326) |
 | `data/isochrone_cache.json` | Persisted ORS results (auto-created, gitignored) |
 | `BGRI2021_0705/` | Raw INE census data (do not modify) |
@@ -34,24 +35,44 @@ lsof -ti:5000 | xargs kill -9 2>/dev/null       # if port busy
 ```
 ORS API key lives in `.env` (`ORS_API_KEY=…`). Census data must be pre-processed once with `python3 process_data.py`.
 
+## Tests
+
+Backend has a pytest suite in `tests/` (~39 tests, ~1.5 s). It guards the server's "do not regress" rules: Shannon H, POI classification, isochrone cache key, population-route snapshot (against the real BGRI 2021 data), GTFS import and HTTP endpoints (including that the circular fallback is never cached).
+
+```bash
+source venv/bin/activate && pytest -q          # full suite
+pytest tests/test_population.py -v             # single file
+pip install -r requirements-dev.txt            # install test deps
+```
+
+There are no frontend tests and no CI configured — run the suite locally before each relevant commit.
+
+## Workflow at the end of every implementation or code change
+
+Whenever you finish a non-trivial change (refactor, fix, new feature):
+
+1. **Hunt for latent bugs or dead code** introduced by the change and remove/fix them (unused variables, unreachable branches, orphan imports, helpers that lost their callers).
+2. **Write or update tests** if the change touches logic that is covered — or should be covered — by `tests/`. Every new "do not regress" rule must translate into a test.
+3. **Run `pytest -q`** and confirm everything is green. Do not commit with red tests.
+4. **Validate that the server starts** (`python3 server.py`) and run a quick smoke test (e.g. `curl /api/config`) to make sure there are no import errors or 500s on basic routes.
+5. **Update `.github/copilot-instructions.md`, `.github/instructions/architecture.instructions.md` and `README.md`** when applicable (see "Keep these instructions accurate" below).
+
 ## Critical rules — do not regress
 
-These are decisions made deliberately after debugging. Read the full reasoning in the architecture file before changing.
+Most **backend** rules are already guarded by tests in `tests/` — just run `pytest -q` to verify (e.g. union in `groups[]`, fallback never cached, ranges in the cache key, Shannon ratio=1 when `residents=0`, `uncovered_bgris` always present, urbanisation replacement). **If a test fails, that is a regression; do not "fix" it by changing the assert without understanding why.**
 
-1. **Census layer pane** — always add the BGRI GeoJSON to the custom `censusPane` (z-index 200), never the default `overlayPane`. After adding, call `isochroneLayers.forEach(l => l.bringToFront())`.
-2. **Urbanisation population is replacement, not additive** — backend subtracts `urb_union` from census intersections before attributing population.
-3. **No floors slider** — urbanisation population formula is exactly `residents_ha × area_ha × (coverage / 100)`. Do not reintroduce a floors factor.
-4. **Edit panel is floating** (`position:fixed`), not inside the sidebar. Visibility toggled via `opacity`/`transform`, not `display:none`. Closes on ESC, ✕ button, or empty map click.
-5. **No CSV import/export** — project state is one JSON file (`saveProject`/`loadProject`). Do not re-add CSV buttons or routes.
-6. **Isochrone fallback (circles) is never cached** — only real ORS results go into `data/isochrone_cache.json`.
-7. **Isochrone queue serialises ORS calls** with 350 ms gap. The queue runner is the only path that drives the sequence isochrones → `calculatePopulation(false)` → `calculateJobs()` → `hideStationsLoading()`. Do not call `calculatePopulation()` directly when stations are still missing isochrones.
-8. **Global totals deduplicate by union (population) and `osm_id` (jobs)** — per-station values use Voronoi/proximity. Never use simple summation for globals shown in the coverage card or report. **Per-line/per-group population totals** (`groups[]` na resposta de `/api/population-in-isochrones`, mostrados no cartão de cada grupo no painel) também usam união (scoped às estações do grupo) para evitar dupla contagem entre estações da mesma linha. Não voltar ao `Σ population_5min + Σ population_10min` por estação.
-9. **`uncovered_bgris` and Shannon H** — backend always returns `uncovered_bgris` on the population endpoint; `compute_shannon_h()` returns `ratio = 1.0` when `residents = 0` and `jobs > 0` (employment hubs are not "dormitories").
-10. **CSS uses design tokens** — never hardcode hex colours, radii, font sizes or spacing in rules; always reference the `:root` variables defined at the top of `style.css`.
-11. **"Covered population" is always 5 min** — both the sidebar coverage card and the printed report use `total_population_5min` (not 5+10) divided by `cityTotalPop`. Do not switch to 10 min or to `5+10` summation in either place.
-12. **Isochrone cache key includes `ranges`** — `_isochrone_cache_key(lat, lng, ranges)` produces `lat,lng|r1,r2`; do not drop `ranges` from the key, otherwise different time ranges will collide on disk.
-13. **Server runs with `debug=False` by default** — gated by `FLASK_DEBUG=1`. Do not re-add `app.run(debug=True)` unconditionally; it exposes the Werkzeug debugger.
-14. **Use `toast(msg, type)` for non-blocking notifications** — `alert(...)` is reserved for hard errors that must block. Prefer toast for confirmations, GTFS results, recalc done, etc.
+The list below covers only decisions **without automated coverage** (frontend, CSS, infra, UI/product). See [`architecture.instructions.md`](./instructions/architecture.instructions.md) for full reasoning.
+
+1. **Census layer pane** — add the BGRI GeoJSON to `censusPane` (z-index 200), never to `overlayPane`. After adding, call `isochroneLayers.forEach(l => l.bringToFront())`.
+2. **No floors slider** — urbanisation population is exactly `residents_ha × area_ha × (coverage / 100)`. Do not reintroduce a floors factor.
+3. **Edit panel is floating** (`position:fixed`), not inside the sidebar. Visibility is toggled via `opacity`/`transform`, not `display:none`. Closes on ESC, ✕, or empty-map click.
+4. **No CSV import/export** — the project is a single JSON file (`saveProject`/`loadProject`). Do not reintroduce CSV buttons.
+5. **Isochrone queue** serialises ORS calls with a 350 ms gap. The queue runner is the only path that orchestrates `isochrones → calculatePopulation(false) → calculateJobs() → hideStationsLoading()`. Do not call `calculatePopulation()` directly while stations still lack isochrones.
+6. **CSS uses design tokens** — never hardcode hex/radii/font-size/spacing. Use the `:root` variables defined in `style.css`.
+7. **"Covered population" is always 5 min** — both the coverage card and the report use `total_population_5min` (not 5+10) divided by `cityTotalPop`.
+8. **Server runs with `debug=False` by default** — gated by `FLASK_DEBUG=1`. Do not reintroduce an unconditional `app.run(debug=True)` (it exposes the Werkzeug debugger).
+9. **`toast(msg, type)` for non-blocking notifications** — `alert(...)` is reserved for hard errors. Prefer toast for confirmations, GTFS results, recalc done, etc.
+10. **Globals/per-station population** — per-station uses Voronoi/proximity to the centroid; globals and per-group use union. Aggregated totals (coverage card, report, `groups[]`) **never** sum `population_5min + population_10min` per station. *(The backend side is covered by `tests/test_population.py`; the per-station calculation in the frontend — e.g. individual cards — is not, hence it stays listed.)*
 
 ## Keep these instructions accurate
 

@@ -58,7 +58,7 @@ Response (extra fields beyond per-point totals):
 5. Distribute urbanisation `estimatedPop` to isochrones proportionally by overlap fraction.
 6. Per-station population uses **proximity to centroid** to deduplicate overlapping isochrones (Voronoi-like).
 7. Global totals (`total_population_*`) use `union_5min` / `union_10min` to avoid any double-counting.
-8. Per-group totals (`groups[]`) use the same union method scoped to each group's stations — soma 5+10 ≤ população real coberta pelo grupo, e com um único grupo coincide exatamente com o total global. Urbanizações são atribuídas ao grupo da estação mais próxima.
+8. Per-group totals (`groups[]`) use the same union method scoped to each group's stations — the `5+10` sum is ≤ the real population covered by the group, and with a single group it matches the global total exactly. Urbanisations are attributed to the nearest station's group.
 9. `uncovered_bgris`: BGRIs with no intersection with `union_10min` AND `N_INDIVIDUOS ≥ 50`, sorted desc, top 30.
 
 **Census fields:**
@@ -98,24 +98,24 @@ Response per station:
 6. `self_sufficiency = jobs_total / (residents_5min × ACTIVE_POPULATION_RATIO)`; returns `1.0` when `residents = 0` and `jobs > 0` (do **not** revert to `0.0`).
 7. `low_coverage_warning = poi_count < 10`.
 
-**Constantes globais** (server.py, no topo):
+**Global constants** (server.py, top of file):
 
-| Nome | Valor | Uso |
+| Name | Value | Use |
 |---|---|---|
-| `RADIUS_5MIN_M` | `417` | Raio fallback (m) quando ORS falha — 5 min |
-| `RADIUS_10MIN_M` | `833` | Raio fallback (m) quando ORS falha — 10 min |
-| `METERS_PER_DEGREE` | `111000` | Conversão aproximada para fallbacks circulares |
-| `ACTIVE_POPULATION_RATIO` | `0.45` | Proxy população ativa (Évora 2021) |
-| `UNCOVERED_MIN_POP` | `50` | Limite de inclusão na lista de BGRIs não cobertas |
+| `RADIUS_5MIN_M` | `417` | Fallback radius (m) when ORS fails — 5 min |
+| `RADIUS_10MIN_M` | `833` | Fallback radius (m) when ORS fails — 10 min |
+| `METERS_PER_DEGREE` | `111000` | Approximate conversion for circular fallbacks |
+| `ACTIVE_POPULATION_RATIO` | `0.45` | Active-population proxy (Évora 2021) |
+| `UNCOVERED_MIN_POP` | `50` | Threshold for inclusion in the uncovered-BGRI list |
 | `WALKING_SPEED_MS` | `1.39` | ~5 km/h |
-| `DEFAULT_RANGES_S` | `[300, 600]` | 5 min, 10 min em segundos |
+| `DEFAULT_RANGES_S` | `[300, 600]` | 5 min, 10 min in seconds |
 
 **`JOBS_PER_HA`** (server.py constants):
 ```python
 { 'industrial': 20, 'commercial': 40, 'retail': 40 }
 ```
 
-**`_request_with_backoff(url, *, method, json, data, headers, timeout, retry_status, backoff_base, label)`** — helper centralizado para chamadas HTTP com retry exponencial em 429/5xx. Usado em `/api/isochrones` (ORS), `/api/jobs-in-isochrones` (Overpass) e qualquer chamada externa. Devolve a `Response` final ou levanta `requests.RequestException`.
+**`_request_with_backoff(url, *, method, json, data, headers, timeout, retry_status, backoff_base, label)`** — centralised helper for HTTP calls with exponential retry on 429/5xx. Used in `/api/isochrones` (ORS), `/api/jobs-in-isochrones` (Overpass) and any external call. Returns the final `Response` or raises `requests.RequestException`.
 
 **Per-POI estimates** (fallback when not a `landuse` polygon): `commerce=3`, `services=5`, `education_health=15–25`, `culture_leisure=4`, `food_beverage=4`.
 
@@ -207,8 +207,8 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `calculatePopulation(triggerJobs=true)` | POSTs to backend; updates `globalPopStats`; calls `renderUncoveredBgris()`; with `triggerJobs=false` skips automatic jobs run (queue runner uses this) |
 | `calculateJobs()` | POSTs to backend; populates `jobsData`; calls `updateJobsSummary()`, `updateSidebar()`, `computeOverlaps()`, `updateScenarioSummary()` if on scenario tab. Returns `true`/`false`. |
 | `updateJobsSummary()` / `updateCoverageCard()` | Updates `#total-jobs`, `#avg-shannon-h`, coverage bars; **dedupes POIs by `osm_id`** |
-| `updateSidebar()` | Orquestrador. Delega em `renderGroupStats()` (cartões por linha, união do servidor com fallback por estação), `renderStationCard(s, i)` (cartão completo), `renderJobsSection(jd)` (Shannon H + breakdown), `renderOverlapBadges(overlaps)`. |
-| `fetchJSON(url, opts)` | Helper de rede para GET/POST JSON. Usado em `calculatePopulation`, `calculateJobs`, `loadCensusLayer`. Lança `Error` com mensagem do servidor (`error` field) ou `HTTP <status>` quando não-OK. |
+| `updateSidebar()` | Orchestrator. Delegates to `renderGroupStats()` (per-line cards using server-side union with per-station fallback), `renderStationCard(s, i)` (full card), `renderJobsSection(jd)` (Shannon H + breakdown), `renderOverlapBadges(overlaps)`. |
+| `fetchJSON(url, opts)` | Network helper for GET/POST JSON. Used by `calculatePopulation`, `calculateJobs`, `loadCensusLayer`. Throws `Error` with the server-provided message (`error` field) or `HTTP <status>` on non-OK responses. |
 | `computeOverlaps()` | Turf intersect+area between all 5-min isochrone pairs; reports when ≥ 10 % |
 | `loadCensusLayer()` | Fetches GeoJSON once; adds to `censusPane`; brings isochrones to front |
 | `getCensusStyle(f)` | Choropleth; checks `densityOverrides` first |
@@ -324,28 +324,48 @@ Overlap badges on station cards:
 
 ## Known fixes — do not regress
 
+### Covered by tests (`tests/`)
+
+These rules have dedicated asserts — just run `pytest -q` to verify. If one fails, that is a regression; **do not change the assert without understanding the cause**.
+
+| Topic | Test(s) | Decision |
+|---|---|---|
+| Global population dedup | `tests/test_population.py::test_group_total_equals_global_for_single_group` | Globals use `union_5min` / `union_10min` server-side (not per-station sum). |
+| Per-group totals via union | `tests/test_population.py::test_group_totals_use_union_not_sum_per_station` | `groups[]` is computed by union scoped to the group's stations; never `Σ pop_5min + Σ pop_10min` per-station. |
+| `uncovered_bgris` always present | `tests/test_population.py::test_uncovered_bgris_always_returned` | Endpoint always returns it, with `population ≥ 50`, top 30 (cap `?uncovered_limit=N` up to 500). |
+| Density override replaces pop | `tests/test_population.py::test_density_override_replaces_population` | `density_overrides[bgri]` replaces `N_INDIVIDUOS`. |
+| Urbanisation enters nearest group's 5 min | `tests/test_population.py::test_urbanization_adds_population_to_5min` | Urbanisation pop → global 5 min + 5 min of the nearest station's group. |
+| Shannon H with `residents=0` | `tests/test_shannon.py::test_residents_zero_with_jobs_classifies_as_employment_node` | `compute_shannon_h(0, jobs>0)` → ratio=1.0; `self_sufficiency=1.0` (not 0). |
+| `self_sufficiency=1.0` when `residents=0` | `tests/test_endpoints.py::test_jobs_endpoint_self_sufficiency_one_when_residents_zero` | Same, at the endpoint. |
+| Fallback never cached | `tests/test_endpoints.py::test_isochrones_fallback_is_not_cached` | Only real ORS results enter `data/isochrone_cache.json`. |
+| ORS cache hit | `tests/test_endpoints.py::test_isochrones_uses_cache_when_available` | Returns `from_cache=True` without hitting ORS. |
+| Isochrone cache key includes ranges | `tests/test_cache_key.py::test_different_ranges_yield_different_keys` | `lat,lng|r1,r2`; `[300,600]` ≠ `[420,840]`. |
+| GTFS dominant route + bbox filter | `tests/test_gtfs.py::test_minimal_gtfs_groups_stops_by_dominant_route` | Stop assigned to the route with the most trips; filter lat 38.4–38.7, lon −8.1 to −7.6. |
+| Config endpoint exposed | `tests/test_endpoints.py::test_config_endpoint_returns_constants` | `/api/config` returns `CITY_TOTAL_JOBS`, `WALKING_SPEED_MS`, `DEFAULT_RANGES_S`, `UNCOVERED_MIN_POP`. |
+
+### Without automated coverage (frontend / CSS / UI / infra)
+
 | Topic | Decision |
 |---|---|
 | Census layer pane | Always `pane: 'censusPane'` (z=200). Bring isochrones to front after adding. |
-| Urbanisation pop is replacement | Backend subtracts `urb_union` before attributing census pop. |
 | No floors input | Formula is `residents_ha × area_ha × coverage/100`. |
 | Edit panel floats | `position:fixed; bottom:24px; right:24px`; opacity/transform toggle. ESC, ✕, empty-map click close it. |
 | No CSV in UI | Single JSON for save/load. Endpoints exist but are unused. |
-| Fallback never cached | Only real ORS results enter `data/isochrone_cache.json`. |
 | Isochrone queue is the only flow | `enqueue → run → calculatePopulation(false) → calculateJobs() → hide/error`. Don't bypass. |
-| Population dedup | Per-station: proximity-to-centroid. Global: server-side `union_5min/10min`. |
-| Jobs dedup (global) | `osm_id` Map-based dedup; falls back to naive sum if missing. |
-| Shannon H with `residents=0` | Returns `1.0` ratio when `jobs > 0` — same for `self_sufficiency`. |
+| Per-station population (frontend) | Voronoi/proximity to the centroid. Individual cards must not sum 5+10 across stations. |
+| Jobs dedup (frontend, coverage card) | `osm_id` Map-based dedup; naive-sum fallback only when `osm_id` is missing. |
 | GTFS replaces, not adds | `importGTFS` clears `stations`, `groups`, `activeGroupId`, queue, overlap, jobs first; calls `saveState()` before. |
-| Urbanisation label always at `layers[1]` | Use `setIcon(L.divIcon({className:'', iconSize:null, …}))` to rename — don't remove/re-add. |
+| Urbanisation label always at `layers[1]` | Use `setIcon(L.divIcon({…}))` to rename — don't remove/re-add. |
 | BGRI ID resolution order | `BGRI2021` → `SUBSECCAO` → `OBJECTID`. Both ends. |
 | ΔH in scenario summary | Uses local `shannonH()` helper with area × `JOBS_PER_HA`; does NOT read live `jobsData`. |
 | Overpass bbox | One union bbox covering all isochrones — never one query per station. |
 | `name` on stations | `null` for manual stops; GTFS stop name when imported. Serialised. |
 | Map capture isolation | `captureMapToImage` always uses an off-screen container; never `invalidateSize` or hide layers on the live map. |
 | Loading overlay sequence | `showStationsLoading` → enqueue → `runIsochroneQueue` (also handles `calculatePopulation(false)` + `calculateJobs()`) → `hide` or `showError`. The retry button re-runs `calculateJobs()` only. |
-| Coverage card | `cityTotalPop` (53 577) loaded once from `/api/census-metadata`; `CITY_TOTAL_JOBS` (23 674) is a hardcoded constant. |
-| Uncovered BGRI threshold | pop ≥ 50, top 30, sorted desc, returned by population endpoint and rendered in scenario tab + report. |
+| Coverage card | `cityTotalPop` (53 577) loaded once from `/api/census-metadata`; `CITY_TOTAL_JOBS` (23 674) is a hardcoded constant. Coverage uses `total_population_5min` (not 5+10). |
+| CSS design tokens | Use `:root` variables; nunca hardcode hex/radii/font/spacing. |
+| `debug=False` por defeito | Gated por `FLASK_DEBUG=1`. Não reintroduzir `app.run(debug=True)` incondicional. |
+| `toast()` para notificações | `alert()` apenas para erros bloqueantes. |
 
 ---
 

@@ -31,3 +31,6 @@ Thumbs.db
 .env.local
 
 data/isochrone_cache.json
+
+# Pytest
+.pytest_cache/

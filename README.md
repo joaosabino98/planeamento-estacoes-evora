@@ -142,6 +142,17 @@ source venv/bin/activate && python3 server.py
 ```
    Abrir em `http://localhost:5000`
 
+## Testes
+
+O backend tem uma suite de testes em `tests/` (~39 testes, ~1.5 s) que cobre as regras críticas: cálculo de Shannon H, classificação de POIs, chave do cache de isócronas, snapshot da rota de população (com BGRI 2021 real), import GTFS e endpoints HTTP (incluindo que o fallback circular nunca é cacheado).
+
+```bash
+pip install -r requirements-dev.txt   # pytest + pytest-mock
+source venv/bin/activate && pytest -q
+```
+
+Não há testes de frontend nem CI configurado — corre os testes localmente antes de cada alteração relevante.
+
 ## Configuração por variáveis de ambiente
 
 Todas são opcionais (com defaults sensatos), definidas em `.env` ou no shell antes de arrancar o servidor:
@@ -180,9 +191,11 @@ Todas são opcionais (com defaults sensatos), definidas em `.env` ou no shell an
 │   ├── index.html          # Estrutura da interface
 │   ├── style.css           # Estilos
 │   └── app.js              # Lógica do cliente (Leaflet, estado, API calls)
+├── tests/                  # Suite pytest (backend)
 ├── server.py               # API Flask (isócronas, cálculo de população, export)
 ├── process_data.py         # Pré-processamento dos dados BGRI
 ├── requirements.txt
+├── requirements-dev.txt    # pytest + mocks
 └── README.md
 ```
 
