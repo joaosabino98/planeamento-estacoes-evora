@@ -9,10 +9,10 @@ Ferramenta web interativa para avaliar a cobertura pedonal de redes de transport
 ### Planeamento de paragens / estações
 
 - Adicionar paragens clicando no mapa; arrastar para reposicionar; remover com ×
-- Organização em **grupos com nome e cor** personalizáveis; visibilidade por grupo
+- Organização em **grupos com nome e cor** personalizáveis; visibilidade por grupo; **duplicação** de um grupo inteiro (clona estações para uma nova cor e nome)
 - **Isócronas reais** de 5 e 10 minutos a pé via OpenRouteService (fallback para círculo quando a API não está disponível)
 - Cálculo de **população residente** nas áreas de captação, sem dupla contagem entre estações sobrepostas
-- Estatísticas por grupo (5 min / 10 min / total) e totais globais em tempo real
+- Estatísticas por grupo (5 min / 10 min / total, calculadas por união das isócronas do grupo — sem dupla contagem entre estações da mesma linha) e totais globais em tempo real
 - **Cobertura da rede** no menu lateral: percentagem de **população** abrangida pela isocócrona de **5 min** (sem dupla contagem) e percentagem de **empregos** abrangidos pela isocócrona de 5 min, ambos face aos totais municipais (53 577 hab. / 23 674 empregos, fonte INE/CME)
 - Undo/redo com Ctrl+Z / Ctrl+Shift+Z
 
