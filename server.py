@@ -491,7 +491,8 @@ def calculate_population():
             "total_population": 0,
             "total_population_5min": 0,
             "total_population_10min": 0,
-            "points": []
+            "points": [],
+            "groups": []
         })
     
     # Velocidade a pé: ~5 km/h = ~83 m/min = ~1.39 m/s
@@ -573,6 +574,7 @@ def calculate_population():
             'id': point_id,
             'lat': lat,
             'lng': lng,
+            'group_id': point_data.get('group_id'),
             'point': point_census,
             'buffer_5min': buffer_5min,
             'buffer_10min': buffer_10min
@@ -781,6 +783,8 @@ def calculate_population():
                         pass
 
     # Add new urbanization populations — attribute to the nearest station's 5-min catchment
+    # Also track per-group urbanization attribution for the per-group totals below
+    urb_pop_by_group = {}
     for urb_feature in new_urbanization_features:
         try:
             urb_pop = urb_feature.get('properties', {}).get('estimated_pop', 0)
@@ -790,6 +794,7 @@ def calculate_population():
             urb_centroid = urb_geom.centroid
             # Find the nearest station
             best_id = None
+            best_group = None
             best_dist = float('inf')
             for pi in point_info:
                 d = pi['point'].distance(
@@ -799,6 +804,7 @@ def calculate_population():
                 if d < best_dist:
                     best_dist = d
                     best_id = pi['id']
+                    best_group = pi.get('group_id')
             if best_id is not None:
                 # Add to the nearest station result
                 for r in results:
@@ -807,9 +813,62 @@ def calculate_population():
                         r['population_total'] += round(urb_pop)
                         total_pop_5min += urb_pop
                         break
+                if best_group is not None:
+                    urb_pop_by_group[best_group] = urb_pop_by_group.get(best_group, 0) + urb_pop
         except Exception as e:
             print(f"Erro ao processar urbanização: {e}")
-    
+
+    # ── Per-group totals via union (sem dupla contagem dentro do grupo) ──
+    # Cada grupo é tratado como uma "mini-rede": fazemos a união das isócronas
+    # das estações desse grupo e calculamos a população coberta do mesmo modo
+    # que o total global. Soma 5 min + 10 min ≤ população real coberta pelo grupo,
+    # e com um único grupo o cartão da linha coincide exatamente com o cartão Total.
+    groups_totals = []
+    if POP_COLUMN and POP_COLUMN in CENSUS_DATA.columns:
+        # agrupar buffers por group_id
+        buffers_by_group = {}
+        for pi in point_info:
+            gid = pi.get('group_id')
+            if gid is None:
+                continue
+            slot = buffers_by_group.setdefault(gid, {'b5': [], 'b10': []})
+            slot['b5'].append(pi['buffer_5min'])
+            slot['b10'].append(pi['buffer_10min'])
+
+        for gid, slot in buffers_by_group.items():
+            try:
+                gu5 = unary_union(slot['b5']) if slot['b5'] else None
+                gu10 = unary_union(slot['b10']) if slot['b10'] else None
+                gpop5 = 0.0
+                gpop10 = 0.0
+                if gu5 is not None and not getattr(gu5, 'is_empty', True):
+                    sub5 = CENSUS_DATA[CENSUS_DATA.geometry.intersects(gu5)]
+                    for _, row in sub5.iterrows():
+                        if row.geometry.area > 0:
+                            inter = row.geometry.intersection(gu5)
+                            if not inter.is_empty:
+                                gpop5 += get_pop_for_row(row) * inter.area / row.geometry.area
+                if gu10 is not None and not getattr(gu10, 'is_empty', True):
+                    secondary = gu10.difference(gu5) if (gu5 is not None and not getattr(gu5, 'is_empty', True)) else gu10
+                    if not getattr(secondary, 'is_empty', True):
+                        sub10 = CENSUS_DATA[CENSUS_DATA.geometry.intersects(secondary)]
+                        for _, row in sub10.iterrows():
+                            if row.geometry.area > 0:
+                                inter = row.geometry.intersection(secondary)
+                                if not inter.is_empty:
+                                    gpop10 += get_pop_for_row(row) * inter.area / row.geometry.area
+                # Adicionar urbanizações atribuídas a estações deste grupo (entram em 5 min)
+                gpop5 += urb_pop_by_group.get(gid, 0)
+                groups_totals.append({
+                    'id': gid,
+                    'total_population_5min': round(gpop5),
+                    'total_population_10min': round(gpop10),
+                    'total_population': round(gpop5 + gpop10),
+                })
+            except Exception as e:
+                print(f"Aviso: falha ao calcular totais para grupo {gid}: {e}")
+
+
     # ── Compute uncovered BGRIs (pop ≥ 50, not intersecting any isochrone) ──
     UNCOVERED_MIN_POP = 50
     # Limite configurável pelo cliente (querystring), com cap de segurança
@@ -855,6 +914,7 @@ def calculate_population():
         "total_population_10min": round(total_pop_10min),
         "total_population": round(total_pop_5min + total_pop_10min),
         "points": results,
+        "groups": groups_totals,
         "uncovered_bgris": uncovered_bgris,
         "uncovered_total_count": uncovered_total_count,
     })

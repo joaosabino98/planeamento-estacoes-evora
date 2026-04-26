@@ -27,7 +27,7 @@ Detailed technical reference. Read [`copilot-instructions.md`](../copilot-instru
 Request:
 ```json
 {
-  "points": [{ "id", "lat", "lng", "isochrones": [geojson5min, geojson10min] }],
+  "points": [{ "id", "lat", "lng", "group_id", "isochrones": [geojson5min, geojson10min] }],
   "density_overrides": { "<bgriId>": { "densityType": 2, "populationOverride": 340 } },
   "new_urbanization_features": [
     { "type": "Feature", "geometry": {…},
@@ -43,6 +43,7 @@ Response (extra fields beyond per-point totals):
   "total_population_10min": 1800,
   "total_population": 6000,
   "points": [{ "id", "population_5min", "population_10min", "population_total" }],
+  "groups": [{ "id", "total_population_5min", "total_population_10min", "total_population" }],
   "uncovered_bgris": [
     { "id": "07052500113", "population": 312, "lat": 38.57, "lng": -7.91, "area_ha": 15.2 }
   ]
@@ -57,7 +58,8 @@ Response (extra fields beyond per-point totals):
 5. Distribute urbanisation `estimatedPop` to isochrones proportionally by overlap fraction.
 6. Per-station population uses **proximity to centroid** to deduplicate overlapping isochrones (Voronoi-like).
 7. Global totals (`total_population_*`) use `union_5min` / `union_10min` to avoid any double-counting.
-8. `uncovered_bgris`: BGRIs with no intersection with `union_10min` AND `N_INDIVIDUOS ≥ 50`, sorted desc, top 30.
+8. Per-group totals (`groups[]`) use the same union method scoped to each group's stations — soma 5+10 ≤ população real coberta pelo grupo, e com um único grupo coincide exatamente com o total global. Urbanizações são atribuídas ao grupo da estação mais próxima.
+9. `uncovered_bgris`: BGRIs with no intersection with `union_10min` AND `N_INDIVIDUOS ≥ 50`, sorted desc, top 30.
 
 **Census fields:**
 - Population: `N_INDIVIDUOS` (resolved at startup into `POP_COLUMN`)

@@ -803,6 +803,7 @@ async function calculatePopulation(triggerJobs = true) {
         const payload = {
             points: stations.map(s => ({
                 id: s.id, lat: s.lat, lng: s.lng,
+                group_id: s.groupId,
                 isochrones: (s.isochrones && !s.isochroneError && Array.isArray(s.isochrones) && s.isochrones.length >= 2) ? s.isochrones : null
             }))
         };
@@ -1156,14 +1157,20 @@ function updateCoverageCard() {
 }
 
 function updateSidebar() {
-    // Per-group stats
+    // Per-group stats — usar totais do servidor (união, sem dupla contagem dentro do grupo).
+    // Fallback para soma por estação só se o servidor ainda não respondeu.
+    const groupTotalsById = {};
+    if (globalPopStats && Array.isArray(globalPopStats.groups)) {
+        globalPopStats.groups.forEach(g => { groupTotalsById[g.id] = g; });
+    }
     const groupStatsContainer = document.getElementById('group-stats-container');
     groupStatsContainer.innerHTML = groups.map(g => {
         const groupStations = stations.filter(s => s.groupId === g.id);
-        const pop5 = groupStations.reduce((sum, s) => sum + (s.population_5min || 0), 0);
-        const pop10 = groupStations.reduce((sum, s) => sum + (s.population_10min || 0), 0);
-        const total = pop5 + pop10;
         if (groupStations.length === 0) return '';
+        const t = groupTotalsById[g.id];
+        const pop5  = t ? t.total_population_5min  : groupStations.reduce((sum, s) => sum + (s.population_5min  || 0), 0);
+        const pop10 = t ? t.total_population_10min : groupStations.reduce((sum, s) => sum + (s.population_10min || 0), 0);
+        const total = t ? t.total_population       : (pop5 + pop10);
         return `
             <div class="stat-card group-stat-card" style="border-left: 4px solid ${g.color};">
                 <div class="group-stat-header">
