@@ -190,7 +190,16 @@ def compute_shannon_h(residents, breakdown):
     return (round(h_norm, 3), classification)
 
 app = Flask(__name__, static_folder='static', static_url_path='/static')
-CORS(app)
+
+# CORS: por defeito permitir qualquer origem; em produção restringir via env CORS_ORIGINS="https://a.com,https://b.com"
+_cors_origins = os.getenv('CORS_ORIGINS', '*').strip()
+if _cors_origins == '*':
+    CORS(app)
+else:
+    CORS(app, origins=[o.strip() for o in _cors_origins.split(',') if o.strip()])
+
+# Limite de tamanho dos uploads (GTFS pode ser grande — default 50 MB)
+app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_UPLOAD_MB', '50')) * 1024 * 1024
 
 # API Key do OpenRouteService
 # Definida no ficheiro .env (ver .env.example)
@@ -204,16 +213,31 @@ CENSUS_DATA = None
 POP_COLUMN = None
 METADATA = None
 
+# ==================== Constantes Globais (cidade) ====================
+CITY_TOTAL_JOBS = int(os.getenv('CITY_TOTAL_JOBS', '23674'))   # SCIE Évora 2021
+WALKING_SPEED_MS = 1.39                                          # ~5 km/h
+DEFAULT_RANGES_S = [300, 600]                                    # 5 min, 10 min
+
+# ==================== Overpass Cache (in-memory) ====================
+# Cache curto (bbox arredondado) para evitar bater repetidamente no Overpass
+# durante recalculations sucessivos.
+_OVERPASS_CACHE = {}
+_OVERPASS_TTL = float(os.getenv('OVERPASS_TTL_S', '600'))   # 10 min
+
 # ==================== Isochrone Disk Cache ====================
 # Only real ORS results are cached — fallback circles are never persisted.
 ISOCHRONE_CACHE_FILE = "data/isochrone_cache.json"
-ISOCHRONE_CACHE = {}
+ISOCHRONE_CACHE = {}                # OrderedDict-like com política LRU simples
+ISOCHRONE_CACHE_MAX = int(os.getenv('ISOCHRONE_CACHE_MAX', '5000'))
 _isochrone_cache_lock = __import__('threading').Lock()
+_isochrone_cache_dirty = False       # flag para gravação debounced
+_isochrone_cache_last_save = 0.0
 
 
-def _isochrone_cache_key(lat, lng):
-    """Stable key rounded to ~1 m precision."""
-    return f"{round(float(lat), 5)},{round(float(lng), 5)}"
+def _isochrone_cache_key(lat, lng, ranges=None):
+    """Stable key rounded to ~1 m precision; inclui ranges para evitar colisões."""
+    rng = ','.join(str(int(r)) for r in (ranges or DEFAULT_RANGES_S))
+    return f"{round(float(lat), 5)},{round(float(lng), 5)}|{rng}"
 
 
 def load_isochrone_cache():
@@ -232,17 +256,44 @@ def load_isochrone_cache():
         print("Cache de isócronas: nenhum ficheiro existente, a começar vazio.")
 
 
-def _save_isochrone_cache():
-    """Atomically persist the in-memory cache to disk."""
+def _save_isochrone_cache(force=False):
+    """Atomically persist the in-memory cache to disk.
+
+    Por defeito, gravações são debounced (mínimo 5 s entre flushes) para reduzir I/O
+    quando várias isócronas são calculadas em sequência. ``force=True`` grava imediatamente.
+    """
     import tempfile
+    global _isochrone_cache_dirty, _isochrone_cache_last_save
+    now = time.time()
+    with _isochrone_cache_lock:
+        _isochrone_cache_dirty = True
+        if not force and (now - _isochrone_cache_last_save) < 5.0:
+            return
+        snapshot = dict(ISOCHRONE_CACHE)
+        _isochrone_cache_last_save = now
+        _isochrone_cache_dirty = False
     os.makedirs('data', exist_ok=True)
     try:
         fd, tmp_path = tempfile.mkstemp(dir='data', suffix='.json.tmp')
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump(ISOCHRONE_CACHE, f)
+            json.dump(snapshot, f)
         os.replace(tmp_path, ISOCHRONE_CACHE_FILE)
     except Exception as e:
         print(f"Aviso: falha ao gravar cache de isócronas: {e}")
+
+
+def _isochrone_cache_set(key, value):
+    """Insere no cache aplicando política LRU simples (FIFO eviction)."""
+    with _isochrone_cache_lock:
+        if key in ISOCHRONE_CACHE:
+            ISOCHRONE_CACHE.pop(key)
+        ISOCHRONE_CACHE[key] = value
+        # Eviction quando excede o limite (Python 3.7+ dicts são ordered)
+        while len(ISOCHRONE_CACHE) > ISOCHRONE_CACHE_MAX:
+            try:
+                ISOCHRONE_CACHE.pop(next(iter(ISOCHRONE_CACHE)))
+            except StopIteration:
+                break
 
 
 def load_census_data():
@@ -324,10 +375,10 @@ def get_isochrones():
     lng = data.get('lng')
     ranges = data.get('ranges', [300, 600])  # 5 min e 10 min em segundos
 
-    if not lat or not lng:
+    if lat is None or lng is None:
         return jsonify({"error": "Coordenadas não fornecidas"}), 400
 
-    cache_key = _isochrone_cache_key(lat, lng)
+    cache_key = _isochrone_cache_key(lat, lng, ranges)
 
     # Cache hit — devolve sem consumir quota ORS
     with _isochrone_cache_lock:
@@ -349,24 +400,30 @@ def get_isochrones():
             "range_type": "time"
         }
 
-        response = requests.post(url, json=body, headers=headers, timeout=15)
+        # Pequeno retry com backoff para 429/5xx
+        response = None
+        for attempt in range(3):
+            response = requests.post(url, json=body, headers=headers, timeout=15)
+            if response.status_code in (429, 500, 502, 503, 504):
+                wait = 0.6 * (2 ** attempt)
+                print(f"ORS {response.status_code}, retry em {wait:.1f}s")
+                time.sleep(wait)
+                continue
+            break
 
-        if response.status_code == 200:
+        if response is not None and response.status_code == 200:
             result = response.json()
-            isochrones = []
-            if 'features' in result:
-                for feature in result['features']:
-                    isochrones.append(feature)
+            isochrones = list(result.get('features', []))
 
             if isochrones:
-                # Cache miss com sucesso ORS — persiste em disco
-                with _isochrone_cache_lock:
-                    ISOCHRONE_CACHE[cache_key] = isochrones
+                # Cache miss com sucesso ORS — persiste em disco (debounced)
+                _isochrone_cache_set(cache_key, isochrones)
                 _save_isochrone_cache()
                 return jsonify({"isochrones": isochrones})
 
         # API falhou ou não devolveu geometrias — fallback NÃO é guardado em cache
-        print(f"OpenRouteService retornou status {response.status_code}, usando fallback")
+        status = response.status_code if response is not None else 'sem resposta'
+        print(f"OpenRouteService retornou status {status}, usando fallback")
         return create_fallback_isochrones(lat, lng, ranges)
 
     except requests.exceptions.RequestException as e:
@@ -378,25 +435,18 @@ def get_isochrones():
 
 def create_fallback_isochrones(lat, lng, ranges):
     """Cria isócronas usando círculos como fallback"""
-    import math
-    
     # Velocidade a pé: ~5 km/h = ~1.39 m/s
     speed_ms = 1.39
-    
+
     isochrones = []
     for range_seconds in ranges:
         # Calcular raio em metros
         radius_m = range_seconds * speed_ms
-        
-        # Converter para graus (aproximação)
-        # 1 grau de latitude ≈ 111 km
+
+        # Converter para graus (aproximação): 1 grau de latitude ≈ 111 km
         radius_deg = radius_m / 111000
-        
-        # Criar círculo usando Turf.js (será feito no frontend se necessário)
-        # Por agora, retornamos um círculo simples
+
         center = [lng, lat]
-        # Vamos criar um polígono circular simples
-        import math
         num_points = 64
         points = []
         for i in range(num_points):
@@ -710,10 +760,15 @@ def calculate_population():
                     pass
         
         # Zona secundária: union_10min menos union_5min (exclui tudo o que já foi contado em 5min)
-        try:
-            secondary_zone = union_10min.difference(union_5min) if union_5min else union_10min
-        except Exception:
-            secondary_zone = union_10min
+        secondary_zone = None
+        if union_10min is not None:
+            if union_5min is not None:
+                try:
+                    secondary_zone = union_10min.difference(union_5min)
+                except Exception:
+                    secondary_zone = union_10min
+            else:
+                secondary_zone = union_10min
         
         if secondary_zone is not None and not getattr(secondary_zone, 'is_empty', True):
             for _, row in census_in_any_10min.iterrows():
@@ -757,7 +812,15 @@ def calculate_population():
     
     # ── Compute uncovered BGRIs (pop ≥ 50, not intersecting any isochrone) ──
     UNCOVERED_MIN_POP = 50
+    # Limite configurável pelo cliente (querystring), com cap de segurança
+    try:
+        uncovered_limit = int(request.args.get('uncovered_limit', '30'))
+    except (TypeError, ValueError):
+        uncovered_limit = 30
+    uncovered_limit = max(1, min(uncovered_limit, 500))
+
     uncovered_bgris = []
+    uncovered_total_count = 0
     if POP_COLUMN and POP_COLUMN in CENSUS_DATA.columns:
         all_coverage = union_10min if union_10min is not None else union_5min
         if all_coverage is not None:
@@ -772,8 +835,9 @@ def calculate_population():
 
         if len(uncovered_df) > 0 and POP_COLUMN in uncovered_df.columns:
             uncovered_df = uncovered_df[uncovered_df[POP_COLUMN] >= UNCOVERED_MIN_POP]
+            uncovered_total_count = int(len(uncovered_df))
             uncovered_df = uncovered_df.sort_values(POP_COLUMN, ascending=False)
-            for _, row in uncovered_df.head(30).iterrows():
+            for _, row in uncovered_df.head(uncovered_limit).iterrows():
                 bgri_id = str(row.get('BGRI2021', row.get('SUBSECCAO', row.get('OBJECTID', ''))))
                 centroid = row.geometry.centroid
                 shape_area = row.get('SHAPE_Area', None)
@@ -792,6 +856,7 @@ def calculate_population():
         "total_population": round(total_pop_5min + total_pop_10min),
         "points": results,
         "uncovered_bgris": uncovered_bgris,
+        "uncovered_total_count": uncovered_total_count,
     })
 
 @app.route('/api/jobs-in-isochrones', methods=['POST'])
@@ -864,16 +929,33 @@ def jobs_in_isochrones():
         f'out body geom;'
     )
 
-    # ── 3. Overpass API call ───────────────────────────────────────────────
+    # ── 3. Overpass API call (com cache em memória por bbox arredondado) ──
     elements = []
-    try:
-        overpass_url = "https://overpass-api.de/api/interpreter"
-        resp = requests.post(overpass_url, data={'data': overpass_query}, timeout=35)
-        resp.raise_for_status()
-        elements = resp.json().get('elements', [])
-        print(f"Overpass returned {len(elements)} elements for bbox {bbox_str}")
-    except Exception as e:
-        print(f"Overpass API error: {e}")
+    bbox_round = (round(miny, 3), round(minx, 3), round(maxy, 3), round(maxx, 3))
+    cache_entry = _OVERPASS_CACHE.get(bbox_round)
+    now_ts = time.time()
+    if cache_entry and (now_ts - cache_entry['t']) < _OVERPASS_TTL:
+        elements = cache_entry['elements']
+        print(f"Overpass cache hit ({len(elements)} elementos) para bbox {bbox_round}")
+    else:
+        try:
+            overpass_url = "https://overpass-api.de/api/interpreter"
+            resp = None
+            for attempt in range(3):
+                resp = requests.post(overpass_url, data={'data': overpass_query}, timeout=35)
+                if resp.status_code in (429, 502, 503, 504):
+                    time.sleep(0.8 * (2 ** attempt))
+                    continue
+                break
+            if resp is not None:
+                resp.raise_for_status()
+                elements = resp.json().get('elements', [])
+                print(f"Overpass devolveu {len(elements)} elementos para bbox {bbox_str}")
+                _OVERPASS_CACHE[bbox_round] = {'t': now_ts, 'elements': elements}
+                if len(_OVERPASS_CACHE) > 64:
+                    _OVERPASS_CACHE.pop(next(iter(_OVERPASS_CACHE)))
+        except Exception as e:
+            print(f"Overpass API error: {e}")
 
     # ── 4. Parse elements into POI list ────────────────────────────────────
     pois = []
@@ -978,98 +1060,6 @@ def jobs_in_isochrones():
         })
 
     return jsonify({'stations': results})
-
-
-@app.route('/api/export-points', methods=['POST'])
-def export_points():
-    """Exporta pontos para CSV"""
-    data = request.json
-    points = data.get('points', [])
-    
-    if not points:
-        return jsonify({"error": "Nenhum ponto para exportar"}), 400
-    
-    # Criar CSV em memória
-    output = io.StringIO()
-    writer = csv.writer(output)
-    
-    # Cabeçalho
-    writer.writerow(['id', 'lat', 'lng', 'group_id', 'group_name', 'population_5min', 'population_10min', 'population_total'])
-    
-    # Dados
-    for point in points:
-        writer.writerow([
-            point.get('id', ''),
-            point.get('lat', ''),
-            point.get('lng', ''),
-            point.get('group_id', ''),
-            point.get('group_name', ''),
-            point.get('population_5min', 0),
-            point.get('population_10min', 0),
-            point.get('population_total', 0)
-        ])
-    
-    # Criar resposta
-    output.seek(0)
-    response = app.response_class(
-        output.getvalue(),
-        mimetype='text/csv',
-        headers={'Content-Disposition': 'attachment; filename=territorio_evora.csv'}
-    )
-    
-    return response
-
-@app.route('/api/import-points', methods=['POST'])
-def import_points():
-    """Importa pontos de um arquivo CSV"""
-    if 'file' not in request.files:
-        return jsonify({"error": "Nenhum arquivo enviado"}), 400
-    
-    file = request.files['file']
-    
-    if file.filename == '':
-        return jsonify({"error": "Nenhum arquivo selecionado"}), 400
-    
-    if not file.filename.endswith('.csv'):
-        return jsonify({"error": "Arquivo deve ser CSV"}), 400
-    
-    try:
-        # Ler CSV
-        stream = io.StringIO(file.stream.read().decode("UTF8"), newline=None)
-        csv_reader = csv.DictReader(stream)
-        
-        points = []
-        base_id = int(time.time() * 1000)
-        for idx, row in enumerate(csv_reader):
-            try:
-                point_id = row.get('id', '').strip()
-                if point_id and point_id.isdigit():
-                    point_id = int(point_id)
-                else:
-                    point_id = base_id + idx
-                
-                point = {
-                    'id': point_id,
-                    'lat': float(row.get('lat', 0)),
-                    'lng': float(row.get('lng', 0)),
-                    'group_name': row.get('group_name', '').strip() or None
-                }
-                points.append(point)
-            except (ValueError, KeyError) as e:
-                print(f"Erro ao processar linha: {row}, erro: {e}")
-                continue
-        
-        if not points:
-            return jsonify({"error": "Nenhum ponto válido encontrado no CSV"}), 400
-        
-        return jsonify({
-            "success": True,
-            "points": points,
-            "count": len(points)
-        })
-    
-    except Exception as e:
-        return jsonify({"error": f"Erro ao processar CSV: {str(e)}"}), 500
 
 
 @app.route('/api/import-gtfs', methods=['POST'])
@@ -1204,10 +1194,23 @@ def import_gtfs():
         return jsonify({"error": f"Erro ao processar GTFS: {str(e)}"}), 500
 
 
+@app.route('/api/config')
+def get_config():
+    """Configuração partilhada entre servidor e cliente (constantes da cidade)."""
+    return jsonify({
+        'city_total_jobs': CITY_TOTAL_JOBS,
+        'walking_speed_ms': WALKING_SPEED_MS,
+        'default_ranges_s': DEFAULT_RANGES_S,
+        'uncovered_min_pop': 50,
+    })
+
+
 if __name__ == '__main__':
     print("Carregando dados de censos...")
     load_census_data()
     load_isochrone_cache()
-    print("Servidor iniciando em http://localhost:5000")
-    app.run(debug=True, port=5000)
+    debug_mode = os.getenv('FLASK_DEBUG', '0') == '1'
+    port = int(os.getenv('PORT', '5000'))
+    print(f"Servidor iniciando em http://localhost:{port} (debug={debug_mode})")
+    app.run(debug=debug_mode, port=port)
 

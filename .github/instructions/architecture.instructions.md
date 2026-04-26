@@ -16,12 +16,11 @@ Detailed technical reference. Read [`copilot-instructions.md`](../copilot-instru
 | `/` | GET | Serves `static/index.html` |
 | `/api/census-geojson` | GET | Full census GeoJSON (streamed) |
 | `/api/census-metadata` | GET | `{pop_column, total_pop, total_features, bounds, columns}` |
-| `/api/isochrones` | POST | `{lat, lng}` → ORS isochrones (cached on disk; circle fallback never cached) |
-| `/api/population-in-isochrones` | POST | Population calc + uncovered BGRIs |
-| `/api/jobs-in-isochrones` | POST | Overpass POI lookup, Shannon H, TOD classification |
+| `/api/config` | GET | Shared client/server constants (`city_total_jobs`, `walking_speed_ms`, `default_ranges_s`, `uncovered_min_pop`) |
+| `/api/isochrones` | POST | `{lat, lng, ranges?}` → ORS isochrones (cached on disk keyed by `lat,lng|ranges`; circle fallback never cached; retry on 429/5xx) |
+| `/api/population-in-isochrones` | POST | Population calc + uncovered BGRIs (querystring `?uncovered_limit=N` — default 30, max 500) |
+| `/api/jobs-in-isochrones` | POST | Overpass POI lookup (10-min in-memory bbox cache), Shannon H, TOD classification |
 | `/api/import-gtfs` | POST | Multipart `.zip` GTFS → grouped stops by dominant route |
-| `/api/export-points` | POST | Returns CSV of stations (legacy; not used by UI) |
-| `/api/import-points` | POST | Multipart CSV → list of points (legacy; not used by UI) |
 
 ### `/api/population-in-isochrones`
 

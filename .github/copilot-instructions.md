@@ -48,6 +48,10 @@ These are decisions made deliberately after debugging. Read the full reasoning i
 8. **Global totals deduplicate by union (population) and `osm_id` (jobs)** — per-station values use Voronoi/proximity. Never use simple summation for globals shown in the coverage card or report.
 9. **`uncovered_bgris` and Shannon H** — backend always returns `uncovered_bgris` on the population endpoint; `compute_shannon_h()` returns `ratio = 1.0` when `residents = 0` and `jobs > 0` (employment hubs are not "dormitories").
 10. **CSS uses design tokens** — never hardcode hex colours, radii, font sizes or spacing in rules; always reference the `:root` variables defined at the top of `style.css`.
+11. **"Covered population" is always 5 min** — both the sidebar coverage card and the printed report use `total_population_5min` (not 5+10) divided by `cityTotalPop`. Do not switch to 10 min or to `5+10` summation in either place.
+12. **Isochrone cache key includes `ranges`** — `_isochrone_cache_key(lat, lng, ranges)` produces `lat,lng|r1,r2`; do not drop `ranges` from the key, otherwise different time ranges will collide on disk.
+13. **Server runs with `debug=False` by default** — gated by `FLASK_DEBUG=1`. Do not re-add `app.run(debug=True)` unconditionally; it exposes the Werkzeug debugger.
+14. **Use `toast(msg, type)` for non-blocking notifications** — `alert(...)` is reserved for hard errors that must block. Prefer toast for confirmations, GTFS results, recalc done, etc.
 
 ## Keep these instructions accurate
 

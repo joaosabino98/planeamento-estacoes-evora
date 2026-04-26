@@ -7,8 +7,8 @@ const EVORA_CENTER = [38.5667, -7.9075];
 const EVORA_ZOOM = 13;
 
 // ==================== City-wide totals ====================
-// Empregos totais na cidade segundo CME
-const CITY_TOTAL_JOBS = 23674;
+// Empregos totais na cidade (substituído ao carregar /api/config; default INE/SCIE 2021)
+let CITY_TOTAL_JOBS = 23674;
 // População total carregada do servidor (/api/census-metadata)
 let cityTotalPop = 0;
 
@@ -160,9 +160,12 @@ function initMap() {
     document.getElementById('btn-cancel-edit').addEventListener('click', cancelEdit);
     document.getElementById('btn-close-edit').addEventListener('click', cancelEdit);
 
-    // ESC closes the edit panel
+    // ESC closes the edit panel; Ctrl+Z/Y for undo/redo (único listener)
     document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') cancelEdit();
+        if (e.key === 'Escape') { cancelEdit(); return; }
+        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+        else if ((e.ctrlKey || e.metaKey) && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo(); }
+        else if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); redo(); }
     });
     document.getElementById('edit-density-select').addEventListener('change', () => {
         const hasValue = document.getElementById('edit-density-select').value !== '';
@@ -182,12 +185,6 @@ function initMap() {
     document.getElementById('urb-coverage').addEventListener('input', updateUrbanizationEstimate);
     document.getElementById('urb-density-type').addEventListener('change', updateUrbanizationEstimate);
 
-    // Keyboard shortcuts
-    document.addEventListener('keydown', function(e) {
-        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo(); }
-        if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); redo(); }
-    });
 
     // Populate density selects
     populateDensitySelects();
@@ -198,7 +195,18 @@ function initMap() {
     // Load city-wide population total for coverage stats
     fetch('/api/census-metadata')
         .then(r => r.json())
-        .then(m => { if (m && m.total_pop) { cityTotalPop = m.total_pop; } })
+        .then(m => { if (m && m.total_pop) { cityTotalPop = m.total_pop; updateCoverageCard(); } })
+        .catch(() => {});
+
+    // Load shared config (city totals etc.) — falha silenciosa, fica nos defaults
+    fetch('/api/config')
+        .then(r => r.ok ? r.json() : null)
+        .then(c => {
+            if (c && typeof c.city_total_jobs === 'number') {
+                CITY_TOTAL_JOBS = c.city_total_jobs;
+                updateCoverageCard();
+            }
+        })
         .catch(() => {});
 }
 
@@ -237,7 +245,7 @@ function deleteGroup(groupId) {
     // Move stations of this group to the first remaining group, or delete them
     const remaining = groups.filter(g => g.id !== groupId);
     if (remaining.length === 0) {
-        alert('Deve existir pelo menos um grupo.');
+        toast('Deve existir pelo menos um grupo.', 'warning');
         return;
     }
     const targetGroup = remaining[0];
@@ -416,7 +424,13 @@ function restoreState(state, skipSave = false) {
     });
 
     isSavingState = true;
-    updateMap(); updateSidebar(); calculatePopulation();
+    updateMap(); updateSidebar();
+    // Se houver estações sem isócrona em cache, deixar a fila tratar disso e
+    // chamar calculatePopulation() apenas no fim. Caso contrário, calcular já.
+    const allCached = stations.every(s => hasValidCache(s));
+    if (allCached) {
+        calculatePopulation();
+    }
     isSavingState = false;
 }
 
@@ -607,6 +621,11 @@ function showStationsLoadingError(msg) {
     if (loadingState) loadingState.classList.add('hidden');
     if (errorState)   errorState.classList.remove('hidden');
     if (errorMsg)     errorMsg.textContent = msg || 'Erro ao calcular empregos.';
+
+    // Em estado de erro, devolver o scroll ao tab para o utilizador poder
+    // navegar enquanto decide o que fazer
+    const tabEl = document.getElementById('tab-stations');
+    if (tabEl) tabEl.style.overflow = '';
 
     // Close button — just hides the overlay
     const closeBtn = document.getElementById('stations-error-close');
@@ -1030,12 +1049,12 @@ async function importGTFS(event) {
         data = await res.json();
         if (!res.ok) { alert('Erro: ' + (data.error || 'Erro desconhecido')); return; }
     } catch (e) {
-        alert('Erro de rede ao enviar ficheiro GTFS.');
+        toast('Erro de rede ao enviar ficheiro GTFS.', 'error');
         return;
     }
 
     if (!data.routes || data.routes.length === 0) {
-        alert('Nenhuma linha com paragens encontrada dentro da área de Évora.');
+        toast('Nenhuma linha com paragens encontrada dentro da área de Évora.', 'warning');
         return;
     }
 
@@ -1077,7 +1096,7 @@ async function importGTFS(event) {
     // runIsochroneQueue() calls it once after all isochrones are ready.
 
     const skipNote = data.skipped_stops > 0 ? ` (${data.skipped_stops} fora da área ignoradas)` : '';
-    alert(`GTFS importado: ${data.total_routes} linha(s), ${addedStations} paragem(ns) adicionada(s).${skipNote}\n\nAs isócronas estão a ser calculadas em sequência — a população e empregos aparecerão progressivamente.`);
+    toast(`GTFS importado: ${data.total_routes} linha(s), ${addedStations} paragem(ns).${skipNote}`, 'success', 5000);
 }
 
 // ============================================================
@@ -1508,18 +1527,13 @@ function confirmUrbanization() {
     // Diffusion rings
     if (diffuse) {
         const rings = [
-            { dist: 0.05, pctLabel: '60%', opacity: 0.25 },
-            { dist: 0.1, pctLabel: '30%', opacity: 0.15 },
-            { dist: 0.2, pctLabel: '10%', opacity: 0.08 }
+            { dist: 0.05, opacity: 0.25 },
+            { dist: 0.1,  opacity: 0.15 },
+            { dist: 0.2,  opacity: 0.08 }
         ];
         rings.forEach(r => {
             try {
                 const buffered = turf.buffer(pendingUrbanizationGeometry, r.dist, { units: 'kilometers' });
-                const ring = turf.difference(turf.featureCollection([
-                    turf.feature(buffered.geometry || buffered),
-                    turf.feature(pendingUrbanizationGeometry)
-                ].filter(Boolean)));
-                // Simpler: just draw the buffer
                 const ringLayer = L.geoJSON(buffered, {
                     style: { color: dt.color, weight: 0.5, fillColor: dt.color, fillOpacity: r.opacity, dashArray: '2,4' }
                 }).addTo(map);
@@ -1655,14 +1669,12 @@ function updateScenarioSummary() {
     const entries = Object.values(jobsData);
     const hasJobsData = entries.length > 0;
 
-    let baseResidents   = hasJobsData ? entries.reduce((s, e) => s + (e.jobs_breakdown ? 0 : 0) + 0, 0) : 0;
     let baseBreakdown   = { commerce: 0, services: 0, education_health: 0, culture_leisure: 0, industry: 0 };
     let baseTotalJobs   = 0;
     let baseResidentSum = 0;
 
     if (hasJobsData) {
         entries.forEach(e => {
-            baseResidentSum += (e.jobs_breakdown ? 0 : 0); // placeholder — residents come from station pop
             Object.keys(baseBreakdown).forEach(k => {
                 baseBreakdown[k] += (e.jobs_breakdown || {})[k] || 0;
             });
@@ -1763,7 +1775,7 @@ async function recalculateCatchment() {
     await calculatePopulation();
     updateScenarioSummary();
     renderUncoveredBgris();
-    alert('Catchment recalculado com as alterações do cenário!');
+    toast('Cobertura recalculada com as alterações do cenário.', 'success');
 }
 
 // ============================================================
@@ -1921,7 +1933,7 @@ async function loadProject(event) {
         const project = JSON.parse(text);
 
         if (!project.version || !project.groups) {
-            alert('Ficheiro de projeto inválido.');
+            toast('Ficheiro de projeto inválido.', 'error');
             return;
         }
 
@@ -1995,10 +2007,10 @@ async function loadProject(event) {
 
         const urbs = project.newUrbanizations ? project.newUrbanizations.length : 0;
         const overrides = Object.keys(project.densityOverrides || {}).length;
-        alert(`Projeto carregado:\n• ${groups.length} grupo(s)\n• ${stations.length} estação(ões)\n• ${overrides} alteração(s) de densidade BGRI\n• ${urbs} urbanização(es) no cenário`);
+        toast(`Projeto carregado: ${groups.length} grupo(s), ${stations.length} estação(ões), ${overrides} alteração(s), ${urbs} urbanização(es).`, 'success', 5000);
     } catch (e) {
         console.error('Erro ao carregar projeto:', e);
-        alert('Erro ao carregar projeto: ' + e.message);
+        toast('Erro ao carregar projeto: ' + e.message, 'error', 6000);
     }
 
     event.target.value = '';
@@ -2015,6 +2027,27 @@ function escapeHtml(str) {
     const d = document.createElement('div');
     d.textContent = str;
     return d.innerHTML;
+}
+
+// ==================== Toast notifications ====================
+// Uso: toast('Mensagem'), toast('Erro', 'error'), toast('OK', 'success', 5000)
+function toast(message, type = 'info', durationMs = 3500) {
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        document.body.appendChild(container);
+    }
+    const el = document.createElement('div');
+    el.className = `toast toast-${type}`;
+    el.textContent = message;
+    el.addEventListener('click', () => el.remove());
+    container.appendChild(el);
+    requestAnimationFrame(() => el.classList.add('toast-visible'));
+    setTimeout(() => {
+        el.classList.remove('toast-visible');
+        setTimeout(() => { try { el.remove(); } catch {} }, 250);
+    }, durationMs);
 }
 
 // ============================================================
@@ -2127,7 +2160,7 @@ async function captureMapToImage({ bounds, width, height, stationMarkers = [], i
 // ============================================================
 async function exportReport() {
     if (stations.length === 0) {
-        alert('Não existem estações para incluir no relatório.');
+        toast('Não existem estações para incluir no relatório.', 'warning');
         return;
     }
 
@@ -2290,16 +2323,16 @@ ${mapImgSrc
   </div>
 </div>`;
 
-    // Coverage KPIs row
-    const totalPopAll = (globalPopStats.total_population_5min || 0) + (globalPopStats.total_population_10min || 0);
-    const popCovPct  = cityTotalPop > 0 && totalPopAll > 0 ? (totalPopAll / cityTotalPop * 100).toFixed(1) : null;
+    // Coverage KPIs row — pop usa SEMPRE 5 min (uniforme com o cartão da sidebar)
+    const coveredPop5 = globalPopStats.total_population_5min || 0;
+    const popCovPct  = cityTotalPop > 0 && coveredPop5 > 0 ? (coveredPop5 / cityTotalPop * 100).toFixed(1) : null;
     const jobsCovPct = CITY_TOTAL_JOBS > 0 && hValues.length > 0 && totalJobsAll > 0 ? (totalJobsAll / CITY_TOTAL_JOBS * 100).toFixed(1) : null;
     html += `
 <div class="summary-grid" style="grid-template-columns:repeat(2,1fr); margin-top:-4px;">
   <div class="kpi" style="border-color:#c6f6d5; background:linear-gradient(135deg,rgba(56,161,105,.06),rgba(49,130,206,.06));">
-    <div class="kpi-label">Cobertura pop. (10 min)</div>
+    <div class="kpi-label">Cobertura pop. (5 min)</div>
     <div class="kpi-value">${popCovPct != null ? popCovPct + '%' : '—'}</div>
-    <div class="kpi-sub">${fmt(totalPopAll)} hab. de ${fmt(cityTotalPop)} totais</div>
+    <div class="kpi-sub">${fmt(coveredPop5)} hab. de ${fmt(cityTotalPop)} totais</div>
   </div>
   <div class="kpi" style="border-color:#bee3f8; background:linear-gradient(135deg,rgba(49,130,206,.06),rgba(159,122,234,.06));">
     <div class="kpi-label">Cobertura empregos (5 min)</div>
@@ -2321,15 +2354,15 @@ ${mapImgSrc
         }
 
         if (newUrbanizations.length > 0) {
-            const densityLabels = { 1: 'Baixa', 2: 'Média-Baixa', 3: 'Média', 4: 'Média-Alta', 5: 'Alta' };
             html += `<table class="tz-table">
 <thead><tr><th>Nome</th><th>Densidade</th><th>Cobertura (%)</th><th>Pop. estimada</th></tr></thead>
 <tbody>`;
             newUrbanizations.forEach(u => {
+                const dt = DENSITY_TYPES[u.densityType] || DENSITY_TYPES[2];
                 html += `<tr>
   <td>${u.name || 'Sem nome'}</td>
-  <td>${densityLabels[u.densityType] || u.densityType}</td>
-  <td>${Math.round((u.coverage || 0) * 100)}</td>
+  <td>${dt.label}</td>
+  <td>${u.coverage || 0}</td>
   <td>${fmt(u.estimatedPop)}</td>
 </tr>`;
             });
@@ -2441,7 +2474,6 @@ ${mapImgSrc
 
     // ── 5. Abrir em novo tab e imprimir ───────────────────────
     // O script de impressão está embutido no HTML gerado: dispara após window.onload
-    // + 1200 ms para garantir que todo o layout (tabelas extensas) está pintado.
     const blobHtml = html.replace(
         '</body>',
         '<script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script></body>'
@@ -2450,10 +2482,19 @@ ${mapImgSrc
     const url  = URL.createObjectURL(blob);
     const tab  = window.open(url, '_blank');
     if (!tab) {
-        alert('O browser bloqueou a abertura do relatório. Autorize popups para este site.');
+        // Popups bloqueados — fallback: descarregar o HTML para o utilizador abrir manualmente
+        try {
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `relatorio_evora_${new Date().toISOString().split('T')[0]}.html`;
+            document.body.appendChild(a); a.click(); a.remove();
+            toast('Popups bloqueados. Relatório descarregado como HTML.', 'warning', 6000);
+        } catch (_) {
+            toast('O browser bloqueou a abertura do relatório.', 'error', 6000);
+        }
     }
-    // Revogar o URL após tempo suficiente para o tab carregar
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    // Revogar o URL após tempo suficiente para o tab/download carregar
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 
 // ============================================================
