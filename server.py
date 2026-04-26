@@ -940,9 +940,19 @@ def jobs_in_isochrones():
     else:
         try:
             overpass_url = "https://overpass-api.de/api/interpreter"
+            overpass_headers = {
+                # Overpass devolve 406 sem User-Agent identificável
+                'User-Agent': 'planeamento-estacoes-evora/1.0 (https://github.com/; contacto via repositório)',
+                'Accept': 'application/json',
+            }
             resp = None
             for attempt in range(3):
-                resp = requests.post(overpass_url, data={'data': overpass_query}, timeout=35)
+                resp = requests.post(
+                    overpass_url,
+                    data={'data': overpass_query},
+                    headers=overpass_headers,
+                    timeout=35,
+                )
                 if resp.status_code in (429, 502, 503, 504):
                     time.sleep(0.8 * (2 ** attempt))
                     continue

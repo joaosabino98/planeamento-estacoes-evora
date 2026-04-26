@@ -13,7 +13,7 @@ Ferramenta web interativa para avaliar a cobertura pedonal de redes de transport
 - **Isócronas reais** de 5 e 10 minutos a pé via OpenRouteService (fallback para círculo quando a API não está disponível)
 - Cálculo de **população residente** nas áreas de captação, sem dupla contagem entre estações sobrepostas
 - Estatísticas por grupo (5 min / 10 min / total) e totais globais em tempo real
-- **Cobertura da rede** no menu lateral: percentagem de população e empregos da cidade abrangidos pela rede proposta face aos totais municipais (53 577 hab. / 23 674 empregos, fonte CME)
+- **Cobertura da rede** no menu lateral: percentagem de **população** abrangida pela isocócrona de **5 min** (sem dupla contagem) e percentagem de **empregos** abrangidos pela isocócrona de 5 min, ambos face aos totais municipais (53 577 hab. / 23 674 empregos, fonte INE/CME)
 - Undo/redo com Ctrl+Z / Ctrl+Shift+Z
 
 ### Análise de Empregos e Mix de Usos
@@ -56,8 +56,9 @@ Ferramenta web interativa para avaliar a cobertura pedonal de redes de transport
 - **Exportar relatório** gera um documento HTML imprimível (PDF via impressão do browser) com mapa, resumo global e tabela completa por grupo
 - O mapa no relatório é capturado em formato **16:9** (1 120 × 630 px) com todas as paragens visíveis e sem isócronas para evitar artefactos gráficos
 - Inclui população abrangida (5 e 10 min, sem dupla contagem), empregos estimados, índice H, perfil funcional, rácio de autossuficiência e badges de sobreposição por estação
-- **Cobertura relativa da rede**: dois KPIs adicionais mostram a percentagem de população e empregos da cidade cobertos pela rede proposta (face aos totais municipais)
+- **Cobertura relativa da rede**: dois KPIs adicionais mostram a percentagem de **população (5 min)** e **empregos (5 min)** da cidade cobertos pela rede proposta (face aos totais municipais; mesma definição que o cartão da sidebar)
 - **Zonas com menor cobertura pedonal**: tabela no fim do relatório com as subsecções estatísticas (BGRI) de população ≥ 50 habitantes não abrangidas por qualquer isócrona de 10 minutos, ordenadas por população descrescente
+- Se o browser bloquear popups, o relatório é automaticamente descarregado como ficheiro `.html` para abertura manual
 - A **dupla contagem de população** entre estações com isócronas sobrepostas é eliminada usando a união das isócronas no servidor; os valores globais reflectem a população única abrangida pela rede
 - Os **empregos** são desduplicados por `osm_id` quando várias estações captam os mesmos POIs
 
@@ -105,8 +106,9 @@ Estações com perfil *Misto desequilibrado* ou *Dormitório* e **autossuficiên
 |---|---|
 | Backend | Python, Flask, GeoPandas, Shapely, Requests |
 | Frontend | HTML/CSS/JS vanilla, Leaflet 1.9.4, Turf.js 6.5.0, Leaflet.draw 1.0.4 |
-| Dados | BGRI 2021 (Instituto Nacional de Estatística), OpenStreetMap via OpenRouteService |
+| Dados | BGRI 2021 (Instituto Nacional de Estatística), OpenStreetMap via OpenRouteService e Overpass API |
 | Isócronas | OpenRouteService Isochrones API (foot-walking) |
+| POIs / empregos | Overpass API (OpenStreetMap) |
 
 ## Instalação
 
@@ -139,6 +141,34 @@ python3 process_data.py
 source venv/bin/activate && python3 server.py
 ```
    Abrir em `http://localhost:5000`
+
+## Configuração por variáveis de ambiente
+
+Todas são opcionais (com defaults sensatos), definidas em `.env` ou no shell antes de arrancar o servidor:
+
+| Variável | Default | Descrição |
+|---|---|---|
+| `ORS_API_KEY` | (nenhuma) | Chave da OpenRouteService. Sem chave o servidor usa apenas o fallback de círculos. |
+| `FLASK_DEBUG` | `0` | `1` ativa o reloader e debugger do Werkzeug — **não usar em produção**. |
+| `PORT` | `5000` | Porta HTTP de escuta. |
+| `CORS_ORIGINS` | `*` | Lista separada por vírgulas de origens permitidas (ex: `https://a.com,https://b.com`). `*` permite todas. |
+| `MAX_UPLOAD_MB` | `50` | Tamanho máximo de upload (GTFS, projeto JSON). |
+| `CITY_TOTAL_JOBS` | `23674` | Total de empregos da cidade usado nos cartões de cobertura. |
+| `ISOCHRONE_CACHE_MAX` | `5000` | Máximo de entradas no cache de isócronas em disco (FIFO). |
+| `OVERPASS_TTL_S` | `600` | TTL (s) do cache em memória das respostas Overpass por bbox. |
+
+## API
+
+| Rota | Método | Propósito |
+|---|---|---|
+| `/` | GET | Serve a página principal |
+| `/api/config` | GET | Constantes partilhadas (`city_total_jobs`, `walking_speed_ms`, `default_ranges_s`, `uncovered_min_pop`) |
+| `/api/census-metadata` | GET | Metadados dos censos (coluna de pop., total, bounds) |
+| `/api/census-geojson` | GET | GeoJSON completo das BGRI (para a layer de cenário) |
+| `/api/isochrones` | POST | `{lat, lng, ranges?}` → isócronas ORS (cache em disco; fallback de círculo) |
+| `/api/population-in-isochrones` | POST | Cálculo de população + BGRIs não cobertas (querystring `?uncovered_limit=N`, máx 500) |
+| `/api/jobs-in-isochrones` | POST | Empregos via Overpass + índice H de Shannon |
+| `/api/import-gtfs` | POST | Multipart `.zip` GTFS → paragens agrupadas por linha dominante |
 
 ## Estrutura do projeto
 

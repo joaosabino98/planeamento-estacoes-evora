@@ -55,7 +55,7 @@ These are decisions made deliberately after debugging. Read the full reasoning i
 
 ## Keep these instructions accurate
 
-**Whenever you change project structure, public APIs, state shape, algorithms, or a "do not regress" rule, update `.github/copilot-instructions.md` and `.github/instructions/architecture.instructions.md` in the same change.** A stale instruction file is worse than none — it teaches the next session to make wrong assumptions.
+**Whenever you change project structure, public APIs, state shape, algorithms, or a "do not regress" rule, update `.github/copilot-instructions.md`, `.github/instructions/architecture.instructions.md` and `README.md` in the same change.** A stale instruction file is worse than none — it teaches the next session to make wrong assumptions, and a stale README misleads users.
 
 Trigger an update when any of the following change:
 - A Flask route is added, removed, or its payload changes
@@ -63,6 +63,8 @@ Trigger an update when any of the following change:
 - A function listed in the architecture file is added, removed or renamed
 - The population, jobs, Shannon H, or coverage algorithm changes
 - A new file or folder is added at the top level
+- A new environment variable or configuration option is introduced (must appear in the README "Configuração por variáveis de ambiente" table)
+- A user-facing feature is added, removed, or changes behaviour (must appear in the README "Funcionalidades" section)
 - A bug is fixed in a way that future agents could undo (add it to "do not regress")
 
-If you make such a change without updating the docs, mention it explicitly in your reply.
+If you make such a change without updating all three docs, mention it explicitly in your reply.
