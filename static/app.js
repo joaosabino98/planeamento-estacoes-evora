@@ -141,8 +141,7 @@ function initMap() {
     document.getElementById('gtfs-file-input').addEventListener('change', importGTFS);
     document.getElementById('btn-export-report').addEventListener('click', exportReport);
     document.getElementById('btn-add-group').addEventListener('click', () => {
-        const name = `Grupo ${groups.length + 1}`;
-        createGroup(name);
+        createGroup(nextGroupName());
         renderGroups();
     });
 
@@ -241,6 +240,43 @@ function createGroup(name, color) {
     return group;
 }
 
+// Próximo nome livre da forma "Grupo N", evitando colisões com grupos existentes
+// (útil depois de apagar grupos: "Grupo {n+1}" pode já existir).
+function nextGroupName() {
+    const used = new Set(groups.map(g => g.name));
+    let n = groups.length + 1;
+    while (used.has(`Grupo ${n}`)) n++;
+    return `Grupo ${n}`;
+}
+
+// Duplica um grupo: cria um novo grupo com nova cor e nome auto, e clona
+// todas as suas estações (mantendo posição e isócronas — mesma lat/lng usa a
+// mesma cache do servidor, evitando refetch ao ORS).
+function duplicateGroup(groupId) {
+    const src = groups.find(g => g.id === groupId);
+    if (!src) return;
+    const newGroup = createGroup(nextGroupName());
+    const srcStations = stations.filter(s => s.groupId === groupId);
+    srcStations.forEach(s => {
+        const cloned = {
+            ...s,
+            id: Date.now() + Math.random(),
+            groupId: newGroup.id,
+            // Layers/markers são recriados por updateMap()
+        };
+        delete cloned.creatingIsochrones;
+        delete cloned.isochroneError;
+        stations.push(cloned);
+    });
+    updateMap();
+    updateSidebar();
+    saveState();
+    // Recalcular população: as novas estações partilham as mesmas isócronas
+    // do grupo original, por isso os totais por grupo refletem a nova rede.
+    if (srcStations.length > 0) calculatePopulation();
+    toast(`Grupo "${src.name}" duplicado como "${newGroup.name}" (${srcStations.length} estação(ões)).`, 'success');
+}
+
 function deleteGroup(groupId) {
     // Move stations of this group to the first remaining group, or delete them
     const remaining = groups.filter(g => g.id !== groupId);
@@ -291,6 +327,7 @@ function renderGroups() {
                 <input class="group-name-input" value="${escapeHtml(g.name)}" data-action="rename" />
                 <span class="group-badge">${count}</span>
                 <button class="group-btn btn-visibility" data-action="visibility" title="${g.visible ? 'Ocultar' : 'Mostrar'}">${g.visible ? '👁️' : '👁️‍🗨️'}</button>
+                <button class="group-btn btn-duplicate-group" data-action="duplicate" title="Duplicar grupo">⎘</button>
                 <button class="group-btn btn-delete-group" data-action="delete" title="Apagar grupo">×</button>
             </div>
         `;
@@ -305,6 +342,7 @@ function renderGroups() {
             if (!action) { setActiveGroup(gid); return; }
             if (action === 'color') { showColorPicker(e.target, gid); }
             else if (action === 'visibility') { toggleGroupVisibility(gid); }
+            else if (action === 'duplicate') { duplicateGroup(gid); }
             else if (action === 'delete') { deleteGroup(gid); }
             else if (action === 'rename') { /* handled by input change */ }
             else { setActiveGroup(gid); }

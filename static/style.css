@@ -456,6 +456,11 @@ html, body {
     font-size: 15px;
 }
 
+.group-btn.btn-duplicate-group {
+    color: var(--c-text-secondary);
+    font-size: 15px;
+}
+
 /* Color picker dropdown */
 .color-picker-popup {
     position: absolute;
