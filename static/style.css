@@ -15,6 +15,7 @@
     --c-green-bg:   #f0fff4;
     --c-orange:     #ed8936;
     --c-orange-bg:  #fffbeb;
+    --c-amber:      #d69e2e;
     --c-purple:     #9f7aea;
     --c-purple-bg:  #faf5ff;
 
@@ -632,6 +633,25 @@ html, body {
     color: var(--c-text-primary);
 }
 
+.breakdown-item.is-total {
+    font-weight: 700;
+}
+
+/* Tier coloring (used in jobs section, threshold-based) */
+.tier-good  { color: var(--c-green); font-weight: 700; }
+.tier-warn  { color: var(--c-amber); font-weight: 700; }
+.tier-bad   { color: var(--c-red);   font-weight: 700; }
+.tier-good-bg { background: var(--c-green); }
+.tier-warn-bg { background: var(--c-amber); }
+.tier-bad-bg  { background: var(--c-red);   }
+
+.tod-tag {
+    font-size: 10px;
+    font-weight: 400;
+    color: var(--c-text-muted);
+    margin-left: 2px;
+}
+
 /* ==================== Stations List ==================== */
 .stations-list h3 {
     font-size: var(--font-xs);
@@ -738,6 +758,26 @@ html, body {
 
 .station-stat-row:last-child {
     border-bottom: none;
+}
+
+.station-stat-row.is-total {
+    border-top: 2px solid var(--c-border);
+    margin-top: var(--sp-1);
+    padding-top: var(--sp-2);
+    font-weight: 600;
+}
+
+.station-stat-row.is-sub .station-stat-label {
+    padding-left: var(--sp-2);
+}
+
+.station-error-message {
+    background: var(--c-red-bg);
+    color: #c53030;
+    padding: var(--sp-2);
+    border-radius: var(--radius-sm);
+    margin-bottom: var(--sp-2);
+    font-size: var(--font-sm);
 }
 
 .station-stat-label {

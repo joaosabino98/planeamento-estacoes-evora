@@ -1237,35 +1237,29 @@ const JOB_CATEGORY_LABELS = {
  */
 function renderJobsSection(jd) {
     if (!jd) return '';
-    const hPct    = Math.round((jd.shannon_h || 0) * 100);
-    const hColor  = jd.shannon_h >= 0.6 ? '#38a169' : jd.shannon_h >= 0.3 ? '#d69e2e' : '#e53e3e';
-    const ssColor = jd.self_sufficiency >= 0.4 ? '#38a169' : jd.self_sufficiency >= 0.2 ? '#d69e2e' : '#e53e3e';
-    const breakdown = Object.entries(jd.jobs_breakdown || {})
+    const hPct       = Math.round((jd.shannon_h || 0) * 100);
+    const hTier      = tierClass(jd.shannon_h, 0.6, 0.3);
+    const ssTier     = tierClass(jd.self_sufficiency, 0.4, 0.2);
+    const breakdown  = Object.entries(jd.jobs_breakdown || {})
         .filter(([, v]) => v > 0)
         .sort(([, a], [, b]) => b - a)
-        .map(([k, v]) =>
-            `<div class="station-stat-row"><span class="station-stat-label">&nbsp;↳ ${JOB_CATEGORY_LABELS[k] || k}:</span><span class="station-stat-value">${formatNumber(v)}</span></div>`
-        ).join('');
+        .map(([k, v]) => statRow(`↳ ${JOB_CATEGORY_LABELS[k] || k}:`, formatNumber(v), { sub: true }))
+        .join('');
     const warning = jd.low_coverage_warning
         ? `<div class="jobs-warning">⚠️ Cobertura OSM limitada — estimativa indicativa (${jd.poi_count} POIs)</div>` : '';
     return `
         <div class="station-jobs-section">
             <div class="station-jobs-header">Empregos estimados (5 min)</div>
             ${warning}
-            <div class="station-stat-row">
-                <span class="station-stat-label">Total empregos:</span>
-                <span class="station-stat-value">${formatNumber(jd.jobs_total)}</span>
-            </div>
+            ${statRow('Total empregos:', formatNumber(jd.jobs_total))}
             ${breakdown}
-            <div class="station-stat-row" style="margin-top:6px;">
-                <span class="station-stat-label">Mix de usos (H):</span>
-                <span class="station-stat-value" style="color:${hColor};font-weight:700;">${jd.shannon_h.toFixed(2)} <span style="font-size:10px;font-weight:400;">(${jd.tod_classification})</span></span>
-            </div>
-            <div class="h-bar-bg"><div class="h-bar-fill" style="width:${hPct}%;background:${hColor};"></div></div>
-            <div class="station-stat-row">
-                <span class="station-stat-label">Auto-suficiência:</span>
-                <span class="station-stat-value" style="color:${ssColor};font-weight:700;">${jd.self_sufficiency.toFixed(2)}</span>
-            </div>
+            ${statRow(
+                'Mix de usos (H):',
+                `${jd.shannon_h.toFixed(2)} <span class="tod-tag">(${jd.tod_classification})</span>`,
+                { valueClass: hTier, raw: true }
+            )}
+            <div class="h-bar-bg"><div class="h-bar-fill ${hTier}-bg" style="width:${hPct}%"></div></div>
+            ${statRow('Auto-suficiência:', jd.self_sufficiency.toFixed(2), { valueClass: ssTier })}
         </div>
     `;
 }
@@ -1297,23 +1291,24 @@ function renderStationCard(station, index) {
     const popT  = station.population_total || 0;
     const hasError = station.isochroneError;
 
-    const jobsHtml = renderJobsSection(jobsData[String(station.id)]);
-    const overlapBadgesHtml = renderOverlapBadges(overlapData[String(station.id)]);
+    const stationName = escapeHtml(station.name || ('Estação ' + (index + 1)));
+    const errorBlock = hasError
+        ? `<div class="station-error-message">⚠️ ${escapeHtml(station.isochroneError)}</div>` : '';
 
     return `
         <div class="station-item ${hasError ? 'station-error' : ''}">
             <div class="station-item-header">
-                <span class="station-name"><span class="station-group-dot" style="background:${group.color}"></span> ${escapeHtml(station.name || ('Estação ' + (index + 1)))}${hasError ? ' ⚠️' : ''}</span>
+                <span class="station-name"><span class="station-group-dot" style="background:${group.color}"></span> ${stationName}${hasError ? ' ⚠️' : ''}</span>
                 <button class="btn-remove" onclick="removeStation(${station.id})" title="Remover">×</button>
             </div>
-            ${hasError ? `<div style="background:#fed7d7;color:#c53030;padding:8px;border-radius:4px;margin-bottom:8px;font-size:12px;">⚠️ ${station.isochroneError}</div>` : ''}
+            ${errorBlock}
             <div class="station-stats">
-                <div class="station-stat-row"><span class="station-stat-label">Área Primária (5 min):</span><span class="station-stat-value">${formatNumber(pop5)}</span></div>
-                <div class="station-stat-row"><span class="station-stat-label">Área Secundária (10 min):</span><span class="station-stat-value">${formatNumber(pop10)}</span></div>
-                <div class="station-stat-row" style="border-top:2px solid #e2e8f0;margin-top:4px;padding-top:8px;font-weight:600;"><span class="station-stat-label">Total:</span><span class="station-stat-value">${formatNumber(popT)}</span></div>
+                ${statRow('Área Primária (5 min):', formatNumber(pop5))}
+                ${statRow('Área Secundária (10 min):', formatNumber(pop10))}
+                ${statRow('Total:', formatNumber(popT), { total: true })}
             </div>
-            ${jobsHtml}
-            ${overlapBadgesHtml}
+            ${renderJobsSection(jobsData[String(station.id)])}
+            ${renderOverlapBadges(overlapData[String(station.id)])}
         </div>
     `;
 }
@@ -1335,6 +1330,8 @@ function renderGroupStats() {
         const pop5  = t ? t.total_population_5min  : groupStations.reduce((sum, s) => sum + (s.population_5min  || 0), 0);
         const pop10 = t ? t.total_population_10min : groupStations.reduce((sum, s) => sum + (s.population_10min || 0), 0);
         const total = t ? t.total_population       : (pop5 + pop10);
+        const item = (label, value, isTotal) =>
+            `<span class="breakdown-item${isTotal ? ' is-total' : ''}"><span class="breakdown-label">${label}:</span><span class="breakdown-value">${formatNumber(value)}</span></span>`;
         return `
             <div class="stat-card group-stat-card" style="border-left: 4px solid ${g.color};">
                 <div class="group-stat-header">
@@ -1343,9 +1340,9 @@ function renderGroupStats() {
                     <span class="group-stat-count">${groupStations.length} est.</span>
                 </div>
                 <div class="stat-breakdown">
-                    <span class="breakdown-item"><span class="breakdown-label">5 min:</span><span class="breakdown-value">${formatNumber(pop5)}</span></span>
-                    <span class="breakdown-item"><span class="breakdown-label">10 min:</span><span class="breakdown-value">${formatNumber(pop10)}</span></span>
-                    <span class="breakdown-item" style="font-weight:700;"><span class="breakdown-label">Total:</span><span class="breakdown-value">${formatNumber(total)}</span></span>
+                    ${item('5 min', pop5)}
+                    ${item('10 min', pop10)}
+                    ${item('Total', total, true)}
                 </div>
             </div>
         `;
@@ -2130,6 +2127,39 @@ function escapeHtml(str) {
     const d = document.createElement('div');
     d.textContent = str;
     return d.innerHTML;
+}
+
+/**
+ * Linha de estatística com label à esquerda e valor à direita.
+ * Reutilizada nos cartões de estação e no bloco de empregos.
+ *
+ * @param {string} label
+ * @param {string|number} value
+ * @param {object} [opts]
+ * @param {boolean} [opts.total]      Aplica modificador `is-total` (separador + bold).
+ * @param {boolean} [opts.sub]        Aplica modificador `is-sub` (label indentado).
+ * @param {string}  [opts.valueClass] Classe CSS extra a aplicar ao valor (ex.: tier-good).
+ * @param {boolean} [opts.raw]        Se true, `value` é injetado como HTML (sem escape).
+ */
+function statRow(label, value, opts = {}) {
+    const rowCls = ['station-stat-row'];
+    if (opts.total) rowCls.push('is-total');
+    if (opts.sub)   rowCls.push('is-sub');
+    const valCls = ['station-stat-value'];
+    if (opts.valueClass) valCls.push(opts.valueClass);
+    const safeValue = opts.raw ? value : escapeHtml(String(value));
+    return `<div class="${rowCls.join(' ')}"><span class="station-stat-label">${escapeHtml(label)}</span><span class="${valCls.join(' ')}">${safeValue}</span></div>`;
+}
+
+/**
+ * Devolve a classe CSS do tier consoante limites (good ≥ ok, warn ≥ warnAt, bad senão).
+ * Usado para colorir Shannon H, auto-suficiência, etc.
+ */
+function tierClass(value, okAt, warnAt) {
+    const v = value || 0;
+    if (v >= okAt)   return 'tier-good';
+    if (v >= warnAt) return 'tier-warn';
+    return 'tier-bad';
 }
 
 // ==================== Toast notifications ====================
