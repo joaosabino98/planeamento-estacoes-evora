@@ -56,7 +56,7 @@ Response (extra fields beyond per-point totals):
 3. Compute `urb_union` = union of all urbanisation polygons.
 4. Subtract `urb_union` from census intersections **before** attributing pop (replacement, not additive).
 5. Distribute urbanisation `estimatedPop` to isochrones proportionally by overlap fraction.
-6. Per-station population uses **proximity to centroid** to deduplicate overlapping isochrones (Voronoi-like).
+6. Per-station population uses **proximity to centroid** to deduplicate overlapping isochrones (Voronoi-like). Implemented in `_assign_population_voronoi(census_subset, point_info, point_populations, get_pop, slot, get_intersection)` — called once for the 5-min ring (`get_intersection = row ∩ buffer_5min`) and once for the secondary 10-min ring (`row ∩ buffer_10min − row ∩ buffer_5min`).
 7. Global totals (`total_population_*`) use `union_5min` / `union_10min` to avoid any double-counting.
 8. Per-group totals (`groups[]`) use the same union method scoped to each group's stations — the `5+10` sum is ≤ the real population covered by the group, and with a single group it matches the global total exactly. Urbanisations are attributed to the nearest station's group.
 9. `uncovered_bgris`: BGRIs with no intersection with `union_10min` AND `N_INDIVIDUOS ≥ 50`, sorted desc, top 30.
@@ -208,6 +208,8 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `calculateJobs()` | POSTs to backend; populates `jobsData`; calls `updateJobsSummary()`, `updateSidebar()`, `computeOverlaps()`, `updateScenarioSummary()` if on scenario tab. Returns `true`/`false`. |
 | `updateJobsSummary()` / `updateCoverageCard()` | Updates `#total-jobs`, `#avg-shannon-h`, coverage bars; **dedupes POIs by `osm_id`** |
 | `updateSidebar()` | Orchestrator. Delegates to `renderGroupStats()` (per-line cards using server-side union with per-station fallback), `renderStationCard(s, i)` (full card), `renderJobsSection(jd)` (Shannon H + breakdown), `renderOverlapBadges(overlaps)`. |
+| `statRow(label, value, opts)` / `tierClass(v, okAt, warnAt)` | Render helpers shared by all sidebar cards. `statRow` builds a `.station-stat-row` (`is-total`/`is-sub` modifiers, optional `valueClass`, escapes by default). `tierClass` returns `'tier-good' \| 'tier-warn' \| 'tier-bad'` (color via design tokens) — used for Shannon H, self-sufficiency, and the `.h-bar-fill` background. |
+| `deleteGroup(groupId)` | Deletes the group **and** its stations (with a `confirm()` if any exist); drops matching entries from `isochroneQueue`; `updateMap()` clears orphan layers. Allowed even on the last remaining group: `activeGroupId` becomes `null` and `addStation` will create a fresh group on the next map click (same behaviour as "Limpar estações"). |
 | `fetchJSON(url, opts)` | Network helper for GET/POST JSON. Used by `calculatePopulation`, `calculateJobs`, `loadCensusLayer`. Throws `Error` with the server-provided message (`error` field) or `HTTP <status>` on non-OK responses. |
 | `computeOverlaps()` | Turf intersect+area between all 5-min isochrone pairs; reports when ≥ 10 % |
 | `loadCensusLayer()` | Fetches GeoJSON once; adds to `censusPane`; brings isochrones to front |
@@ -363,9 +365,9 @@ These rules have dedicated asserts — just run `pytest -q` to verify. If one fa
 | Map capture isolation | `captureMapToImage` always uses an off-screen container; never `invalidateSize` or hide layers on the live map. |
 | Loading overlay sequence | `showStationsLoading` → enqueue → `runIsochroneQueue` (also handles `calculatePopulation(false)` + `calculateJobs()`) → `hide` or `showError`. The retry button re-runs `calculateJobs()` only. |
 | Coverage card | `cityTotalPop` (53 577) loaded once from `/api/census-metadata`; `CITY_TOTAL_JOBS` (23 674) is a hardcoded constant. Coverage uses `total_population_5min` (not 5+10). |
-| CSS design tokens | Use `:root` variables; nunca hardcode hex/radii/font/spacing. |
-| `debug=False` por defeito | Gated por `FLASK_DEBUG=1`. Não reintroduzir `app.run(debug=True)` incondicional. |
-| `toast()` para notificações | `alert()` apenas para erros bloqueantes. |
+| CSS design tokens | Use `:root` variables; never hardcode hex/radii/font/spacing. |
+| `debug=False` by default | Gated by `FLASK_DEBUG=1`. Do not reintroduce an unconditional `app.run(debug=True)`. |
+| `toast()` for notifications | `alert()` only for blocking errors. |
 
 ---
 

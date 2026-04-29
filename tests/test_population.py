@@ -151,3 +151,30 @@ def test_urbanization_adds_population_to_5min(client):
     g_base = next(g for g in base["groups"] if g["id"] == "g1")
     g_urb  = next(g for g in with_urb["groups"] if g["id"] == "g1")
     assert g_urb["total_population_5min"] >= g_base["total_population_5min"] + 4000
+
+
+def test_per_station_5min_voronoi_distributed_not_collapsed(client):
+    """Regressão: no ramo de sobreposição múltipla do anel de 5 min, o
+    código antigo usava `point_data` poluído pelo loop exterior — toda a
+    população da BGRI partilhada por 2+ estações ia para a *última* estação
+    do `point_info`. Agora cada estação fica com a sua fatia Voronoi.
+
+    Configuração: 3 estações próximas (~150 m entre si) no centro de Évora.
+    Espera-se que `population_5min` seja repartido entre todas, não que
+    fique concentrado numa só.
+    """
+    payload = {
+        "points": [
+            {"id": 1, "lat": 38.5667, "lng": -7.9075, "group_id": "g"},
+            {"id": 2, "lat": 38.5680, "lng": -7.9080, "group_id": "g"},
+            {"id": 3, "lat": 38.5660, "lng": -7.9060, "group_id": "g"},
+        ]
+    }
+    data = _post(client, payload)
+    pops = {p["id"]: p["population_5min"] for p in data["points"]}
+    # Todas as 3 têm de receber população em 5 min (estão num miolo denso)
+    assert all(v > 0 for v in pops.values()), pops
+    # Nenhuma deve concentrar > 80% do total das três (sinal do bug antigo)
+    total5 = sum(pops.values())
+    assert total5 > 0
+    assert max(pops.values()) / total5 < 0.8, pops

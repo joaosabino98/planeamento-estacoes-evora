@@ -812,7 +812,6 @@ html, body {
     gap: 6px;
 }
 
-.btn-clear,
 .btn-save-project,
 .btn-load-project {
     color: white;
@@ -826,16 +825,6 @@ html, body {
     transition: all 0.15s;
     letter-spacing: 0.01em;
     min-width: 120px;
-}
-
-.btn-clear {
-    background: var(--c-red);
-}
-
-.btn-clear:hover {
-    background: #c53030;
-    transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
 }
 
 .btn-save-project {

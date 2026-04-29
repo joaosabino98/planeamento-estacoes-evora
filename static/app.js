@@ -308,11 +308,9 @@ function duplicateGroup(groupId) {
 
 function deleteGroup(groupId) {
     // Apaga o grupo e todas as estações que lhe pertencem.
+    // É permitido apagar o último grupo: a próxima estação adicionada
+    // criará automaticamente um novo grupo (mesmo comportamento de "Limpar estações").
     const remaining = groups.filter(g => g.id !== groupId);
-    if (remaining.length === 0) {
-        toast('Deve existir pelo menos um grupo.', 'warning');
-        return;
-    }
     const group = groups.find(g => g.id === groupId);
     const groupStations = stations.filter(s => s.groupId === groupId);
     if (groupStations.length > 0) {
@@ -328,7 +326,7 @@ function deleteGroup(groupId) {
     isochroneQueue = isochroneQueue.filter(s => !removedIds.has(s && s.id));
     stations = stations.filter(s => s.groupId !== groupId);
     groups = remaining;
-    if (activeGroupId === groupId) activeGroupId = remaining[0].id;
+    if (activeGroupId === groupId) activeGroupId = remaining.length > 0 ? remaining[0].id : null;
     renderGroups();
     updateMap();
     updateSidebar();
@@ -517,9 +515,14 @@ function restoreState(state, skipSave = false) {
 // ============================================================
 function addStation(lat, lng) {
     saveState();
-    const gid = activeGroupId || (groups[0] && groups[0].id);
-    if (!gid) { createGroup('Grupo 1'); }
-    const station = { id: Date.now(), lat, lng, groupId: activeGroupId || groups[0].id };
+    if (!activeGroupId || !groups.find(g => g.id === activeGroupId)) {
+        if (groups.length > 0) {
+            activeGroupId = groups[0].id;
+        } else {
+            createGroup(nextGroupName());
+        }
+    }
+    const station = { id: Date.now(), lat, lng, groupId: activeGroupId };
     stations.push(station);
     updateMap(); updateSidebar(); renderGroups();
 }
@@ -872,7 +875,16 @@ function removeStationIsochrones(stationId) {
 // ============================================================
 async function calculatePopulation(triggerJobs = true) {
     if (stations.length === 0) {
-        updateSidebarStats({ total_population: 0, total_population_5min: 0, total_population_10min: 0, points: [] });
+        // Repor totais para que o cartão de cobertura (que lê de globalPopStats)
+        // reflita o estado vazio em vez de manter os valores anteriores.
+        globalPopStats = { total_population: 0, total_population_5min: 0, total_population_10min: 0, points: [], groups: [] };
+        // Limpar empregos/mix de usos para que o cartão de estatísticas
+        // não fique com valores das estações entretanto removidas.
+        jobsData = {};
+        updateJobsSummary();
+        updateCoverageCard();
+        updateSidebarStats(globalPopStats);
+        renderUncoveredBgris();
         updateSidebar();
         return;
     }
