@@ -307,21 +307,32 @@ function duplicateGroup(groupId) {
 }
 
 function deleteGroup(groupId) {
-    // Move stations of this group to the first remaining group, or delete them
+    // Apaga o grupo e todas as estações que lhe pertencem.
     const remaining = groups.filter(g => g.id !== groupId);
     if (remaining.length === 0) {
         toast('Deve existir pelo menos um grupo.', 'warning');
         return;
     }
-    const targetGroup = remaining[0];
-    stations.forEach(s => {
-        if (s.groupId === groupId) s.groupId = targetGroup.id;
-    });
+    const group = groups.find(g => g.id === groupId);
+    const groupStations = stations.filter(s => s.groupId === groupId);
+    if (groupStations.length > 0) {
+        const name = group ? group.name : 'este grupo';
+        const msg = groupStations.length === 1
+            ? `Apagar o grupo "${name}" e a sua 1 estação?`
+            : `Apagar o grupo "${name}" e as suas ${groupStations.length} estações?`;
+        if (!confirm(msg)) return;
+    }
+    saveState();
+    // Descartar pedidos pendentes para estações deste grupo
+    const removedIds = new Set(groupStations.map(s => s.id));
+    isochroneQueue = isochroneQueue.filter(s => !removedIds.has(s && s.id));
+    stations = stations.filter(s => s.groupId !== groupId);
     groups = remaining;
-    if (activeGroupId === groupId) activeGroupId = targetGroup.id;
+    if (activeGroupId === groupId) activeGroupId = remaining[0].id;
     renderGroups();
     updateMap();
     updateSidebar();
+    calculatePopulation();
 }
 
 function setActiveGroup(groupId) {

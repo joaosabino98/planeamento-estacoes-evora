@@ -506,6 +506,65 @@ def create_fallback_isochrones(lat, lng, ranges):
     
     return jsonify({"isochrones": isochrones})
 
+def _assign_population_voronoi(census_subset, point_info, point_populations,
+                               get_pop, slot, get_intersection):
+    """Atribui população BGRI→pontos resolvendo sobreposições por proximidade.
+
+    Para cada linha de censos em ``census_subset``:
+      1. recolhe os pontos cuja área a atribuir (devolvida por
+         ``get_intersection(row, point_data)``) intersecta esta BGRI;
+      2. se só houver um, atribui-lhe a fração proporcional à área;
+      3. se houver vários, divide a BGRI atribuindo cada zona de sobreposição
+         ao ponto mais próximo do centroide dessa zona (Voronoi por proximidade).
+
+    O resultado é acumulado em ``point_populations[id][slot]``. Esta função
+    é usada para os anéis de 5 min e 10 min — a diferença está na função
+    ``get_intersection`` passada pelo chamador.
+    """
+    for _, row in census_subset.iterrows():
+        if row.geometry.area <= 0:
+            continue
+
+        intersecting = []
+        for pi in point_info:
+            inter = get_intersection(row, pi)
+            if not inter.is_empty and inter.area > 0:
+                intersecting.append({'point_data': pi, 'intersection': inter})
+
+        if not intersecting:
+            continue
+
+        if len(intersecting) == 1:
+            pd = intersecting[0]['point_data']
+            inter = intersecting[0]['intersection']
+            ratio = inter.area / row.geometry.area
+            point_populations[pd['id']][slot] += get_pop(row) * ratio
+            continue
+
+        # Sobreposição: para cada ponto, remover as zonas onde outro ponto
+        # está mais perto do centroide do overlap.
+        for item in intersecting:
+            pid = item['point_data']['id']
+            unique = item['intersection']
+            for other in intersecting:
+                if other['point_data']['id'] == pid:
+                    continue
+                if not unique.intersects(other['intersection']):
+                    continue
+                overlap = unique.intersection(other['intersection'])
+                if overlap.is_empty:
+                    continue
+                centroid = overlap.centroid
+                d_self = item['point_data']['point'].distance(centroid)
+                d_other = other['point_data']['point'].distance(centroid)
+                if d_other < d_self:
+                    unique = unique.difference(overlap)
+
+            if not unique.is_empty and unique.area > 0:
+                ratio = unique.area / row.geometry.area
+                point_populations[pid][slot] += get_pop(row) * ratio
+
+
 @app.route('/api/population-in-isochrones', methods=['POST'])
 def calculate_population():
     """Calcula população dentro de isócronas, evitando duplicações em sobreposições"""
@@ -653,123 +712,33 @@ def calculate_population():
         else:
             census_in_any_10min = gpd.GeoDataFrame()
         
-        # Processar área de 5 minutos
-        for idx, row in census_in_any_5min.iterrows():
-            # Encontrar todos os pontos cujas isócronas de 5 min intersectam esta área de censo
-            intersecting_points = []
-            for point_idx, point_data in enumerate(point_info):
-                intersection = row.geometry.intersection(point_data['buffer_5min'])
-                if not intersection.is_empty and intersection.area > 0:
-                    intersecting_points.append({
-                        'point_idx': point_idx,
-                        'point_data': point_data,
-                        'intersection': intersection
-                    })
-            
-            if not intersecting_points:
-                continue
-            
-            # Se há apenas um ponto, atribuir diretamente
-            if len(intersecting_points) == 1:
-                point_data = intersecting_points[0]['point_data']
-                intersection = intersecting_points[0]['intersection']
-                area_ratio = intersection.area / row.geometry.area if row.geometry.area > 0 else 1.0
-                pop_value = get_pop_for_row(row) * area_ratio
-                point_populations[point_data['id']]['5min'] += pop_value
-            else:
-                # Há sobreposição - dividir a área de censo entre os pontos mais próximos
-                # Para cada parte da interseção, determinar qual ponto está mais próximo
-                # Para cada ponto que intersecta, calcular a parte única (sem sobreposição)
-                for i, item in enumerate(intersecting_points):
-                    point_id = item['point_data']['id']
-                    intersection = item['intersection']
-                    
-                    # Remover partes que já foram atribuídas a outros pontos mais próximos
-                    unique_intersection = intersection
-                    for other_item in intersecting_points:
-                        if other_item['point_data']['id'] != point_id:
-                            other_intersection = other_item['intersection']
-                            # Verificar se há sobreposição
-                            if unique_intersection.intersects(other_intersection):
-                                # Determinar qual ponto está mais próximo do centroide da sobreposição
-                                overlap = unique_intersection.intersection(other_intersection)
-                                if not overlap.is_empty:
-                                    overlap_centroid = overlap.centroid
-                                    dist_current = item['point_data']['point'].distance(overlap_centroid)
-                                    dist_other = other_item['point_data']['point'].distance(overlap_centroid)
-                                    
-                                    # Se o outro ponto está mais próximo, remover a sobreposição
-                                    if dist_other < dist_current:
-                                        unique_intersection = unique_intersection.difference(overlap)
-                    
-                    # Atribuir população da parte única
-                    if not unique_intersection.is_empty and unique_intersection.area > 0:
-                        area_ratio = unique_intersection.area / row.geometry.area if row.geometry.area > 0 else 1.0
-                        pop_value = get_pop_for_row(row) * area_ratio
-                        point_populations[point_id]['5min'] += pop_value
-        
-        # Processar área de 10 minutos (apenas a parte que não está em 5 min)
-        for idx, row in census_in_any_10min.iterrows():
-            # Encontrar todos os pontos cujas isócronas de 10 min intersectam esta área de censo
-            intersecting_points = []
-            for point_idx, point_data in enumerate(point_info):
-                intersection_10min = row.geometry.intersection(point_data['buffer_10min'])
-                if not intersection_10min.is_empty and intersection_10min.area > 0:
-                    # Remover a parte que já está na área de 5 min deste ponto
-                    intersection_5min = row.geometry.intersection(point_data['buffer_5min'])
-                    if not intersection_5min.is_empty:
-                        intersection_secondary = intersection_10min.difference(intersection_5min)
-                    else:
-                        intersection_secondary = intersection_10min
-                    
-                    if not intersection_secondary.is_empty and intersection_secondary.area > 0:
-                        intersecting_points.append({
-                            'point_idx': point_idx,
-                            'point_data': point_data,
-                            'intersection': intersection_secondary
-                        })
-            
-            if not intersecting_points:
-                continue
-            
-            # Se há apenas um ponto, atribuir diretamente
-            if len(intersecting_points) == 1:
-                point_data = intersecting_points[0]['point_data']
-                intersection = intersecting_points[0]['intersection']
-                area_ratio = intersection.area / row.geometry.area if row.geometry.area > 0 else 1.0
-                pop_value = get_pop_for_row(row) * area_ratio
-                point_populations[point_data['id']]['10min'] += pop_value
-            else:
-                # Há sobreposição - dividir a área de censo entre os pontos mais próximos
-                # Para cada parte da interseção, determinar qual ponto está mais próximo
-                # Para cada ponto que intersecta, calcular a parte única (sem sobreposição)
-                for i, item in enumerate(intersecting_points):
-                    point_id = item['point_data']['id']
-                    intersection = item['intersection']
-                    
-                    # Remover partes que já foram atribuídas a outros pontos mais próximos
-                    unique_intersection = intersection
-                    for other_item in intersecting_points:
-                        if other_item['point_data']['id'] != point_id:
-                            other_intersection = other_item['intersection']
-                            # Verificar se há sobreposição
-                            if unique_intersection.intersects(other_intersection):
-                                # Determinar qual ponto está mais próximo do centroide da sobreposição
-                                overlap = unique_intersection.intersection(other_intersection)
-                                if not overlap.is_empty:
-                                    overlap_centroid = overlap.centroid
-                                    dist_current = item['point_data']['point'].distance(overlap_centroid)
-                                    dist_other = other_item['point_data']['point'].distance(overlap_centroid)
-                                    
-                                    # Se o outro ponto está mais próximo, remover a sobreposição
-                                    if dist_other < dist_current:
-                                        unique_intersection = unique_intersection.difference(overlap)
-                    
-                    # Atribuir população da parte única
-                    if not unique_intersection.is_empty and unique_intersection.area > 0:
-                        area_ratio = unique_intersection.area / row.geometry.area if row.geometry.area > 0 else 1.0
-                        pop_value = get_pop_for_row(row) * area_ratio
-                        point_populations[point_id]['10min'] += pop_value
+        # Processar área de 5 min: interseção direta com o buffer de 5 min de cada estação.
+        _assign_population_voronoi(
+            census_in_any_5min,
+            point_info,
+            point_populations,
+            get_pop_for_row,
+            slot='5min',
+            get_intersection=lambda row, pi: row.geometry.intersection(pi['buffer_5min']),
+        )
+
+        # Processar área de 10 min: anel secundário por estação (buffer_10min menos
+        # a parte já contada no anel de 5 min da própria estação).
+        def _ring_10min(row, pi):
+            inter10 = row.geometry.intersection(pi['buffer_10min'])
+            if inter10.is_empty:
+                return inter10
+            inter5 = row.geometry.intersection(pi['buffer_5min'])
+            return inter10.difference(inter5) if not inter5.is_empty else inter10
+
+        _assign_population_voronoi(
+            census_in_any_10min,
+            point_info,
+            point_populations,
+            get_pop_for_row,
+            slot='10min',
+            get_intersection=_ring_10min,
+        )
         
         # Criar resultados finais (per-station Voronoi values — não acumular totais aqui)
         for point_data in point_info:
