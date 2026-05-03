@@ -259,7 +259,7 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `tilePane` (default) | 200 | OSM tiles |
 | `censusPane` (custom) | 200 | BGRI choropleth — always below isochrones |
 | `overlayPane` (default) | 400 | Isochrone polygons, urbanisation polygons |
-| `routePane` (custom) | 350 | Group routes (trunk + variants) — above isochrones, below markers |
+| `routePane` (custom) | 450 | Group routes (trunk + variants, c/ casing branco translúcido) — entre `overlayPane` (400) e `markerPane` (600) |
 | `markerPane` (default) | 600 | Station markers, urbanisation labels |
 
 > Census GeoJSON **must** use `pane: 'censusPane'`. Otherwise it stacks over isochrones.
@@ -398,7 +398,7 @@ These rules have dedicated asserts — just run `pytest -q` to verify. If one fa
 | Topic | Decision |
 |---|---|
 | Census layer pane | Always `pane: 'censusPane'` (z=200). Bring isochrones to front after adding. |
-| Route pane | Group routes (trunk + variants) **must** use `pane: 'routePane'` (z=350). Não pintar para `overlayPane` (esconder-se-iam atrás das isócronas) nem para `markerPane` (cobririam os pins). |
+| Route pane | Group routes (trunk + variants) **must** use `pane: 'routePane'` (z=450, entre `overlayPane` 400 e `shadowPane` 500). Não pintar para `overlayPane` (esconder-se-iam atrás das isócronas) nem para `markerPane` (cobririam os pins). Cada rota é desenhada em duas camadas: casing branco translúcido (`weight + 4`, opacity 0.55) seguido da linha colorida — garante contraste sobre isócronas do mesmo grupo. |
 | Routes são puramente visuais | `group.route.{trunk,variants}` não entram em `calculatePopulation`, `calculateJobs` nem `computeOverlaps`. As paragens não têm de coincidir com a geometria — o pin define o catchment, a rota descreve só o percurso. |
 | Comprimento operacional da rota | `length(trunk) × 2 + Σ length(variants)` (`getRouteLengthM`). O tronco é bidirecional (×2); as variantes são unidirecionais (×1). |
 | Modo de desenho da rota | Apenas livre (`L.Draw.Polyline` sem snap). `addStation` é bloqueado enquanto `isDrawingRoute` está ativo. ESC cancela desenho ou edição em curso (antes de chamar `cancelEdit`). |

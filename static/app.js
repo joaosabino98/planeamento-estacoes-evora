@@ -146,10 +146,11 @@ function initMap() {
     map.getPane('censusPane').style.zIndex = 200;
     map.getPane('censusPane').style.pointerEvents = 'auto';
 
-    // Custom pane for routes — sits above isochrones (z=400) but below markers (z=600),
-    // de modo que as rotas sejam claramente visíveis sem esconder os pins das paragens.
+    // Custom pane for routes — sits above isochrones (overlayPane z=400) but below
+    // markers (markerPane z=600). z=450 cai entre overlay (400) e shadow (500),
+    // garantindo que as linhas fiquem visíveis sobre as isócronas sem cobrir os pins.
     map.createPane('routePane');
-    map.getPane('routePane').style.zIndex = 350;
+    map.getPane('routePane').style.zIndex = 450;
     map.getPane('routePane').style.pointerEvents = 'auto';
 
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -444,53 +445,85 @@ function renderAllRoutes() {
     groups.forEach(g => renderGroupRoute(g));
 }
 
+// Cria o par casing (halo branco translúcido) + linha colorida para uma geometria.
+// O casing é desenhado primeiro (peso maior) e a linha por cima, dando contraste
+// quando a rota atravessa isócronas ou tiles escuros.
+function buildRoutePair(geometry, group, isVariant) {
+    const baseWeight = isVariant ? 4 : 5;
+    const casingWeight = baseWeight + 4;
+    const feature = { type: 'Feature', geometry, properties: {} };
+
+    const casing = L.geoJSON(feature, {
+        pane: 'routePane',
+        style: {
+            color: '#ffffff', weight: casingWeight, opacity: 0.55,
+            lineCap: 'round', lineJoin: 'round',
+            interactive: false,
+        }
+    }).addTo(map);
+
+    const line = L.geoJSON(feature, {
+        pane: 'routePane',
+        style: {
+            color: group.color, weight: baseWeight, opacity: 0.95,
+            dashArray: isVariant ? '8,6' : null,
+            lineCap: 'round', lineJoin: 'round',
+        }
+    }).addTo(map);
+
+    line.on('mouseover', () => {
+        line.setStyle({ weight: baseWeight + 2 });
+        casing.setStyle({ weight: casingWeight + 2 });
+    });
+    line.on('mouseout', () => {
+        line.setStyle({ weight: baseWeight });
+        casing.setStyle({ weight: casingWeight });
+    });
+
+    return { casing, line, baseWeight, casingWeight };
+}
+
 function renderGroupRoute(group) {
     if (!group) return;
     ensureRouteShape(group);
-    const tracker = groupRouteLayers[group.id] || { trunkLayer: null, variantLayers: {} };
+    const tracker = groupRouteLayers[group.id] || {
+        trunkLayer: null, trunkCasing: null,
+        variantLayers: {}, variantCasings: {}
+    };
     groupRouteLayers[group.id] = tracker;
+    // Migrate older tracker shape (sem casings) sem partir nada
+    if (!('trunkCasing' in tracker))   tracker.trunkCasing = null;
+    if (!('variantCasings' in tracker)) tracker.variantCasings = {};
 
     const visible = group.visible !== false;
 
     // -- Trunk --
-    if (tracker.trunkLayer) { try { map.removeLayer(tracker.trunkLayer); } catch {} tracker.trunkLayer = null; }
+    if (tracker.trunkLayer)  { try { map.removeLayer(tracker.trunkLayer); }  catch {} tracker.trunkLayer = null; }
+    if (tracker.trunkCasing) { try { map.removeLayer(tracker.trunkCasing); } catch {} tracker.trunkCasing = null; }
     if (visible && group.route.trunk) {
-        const layer = L.geoJSON(
-            { type: 'Feature', geometry: group.route.trunk, properties: {} },
-            {
-                pane: 'routePane',
-                style: { color: group.color, weight: 5, opacity: 0.85, lineCap: 'round', lineJoin: 'round' }
-            }
-        ).addTo(map);
-        layer.bindTooltip(`${escapeHtml(group.name)} — tronco`, { sticky: true });
-        layer.on('mouseover', () => layer.setStyle({ weight: 7 }));
-        layer.on('mouseout',  () => layer.setStyle({ weight: 5 }));
-        tracker.trunkLayer = layer;
+        const { casing, line } = buildRoutePair(group.route.trunk, group, false);
+        line.bindTooltip(`${escapeHtml(group.name)} — tronco`, { sticky: true });
+        tracker.trunkLayer  = line;
+        tracker.trunkCasing = casing;
     }
 
     // -- Variants --
     Object.keys(tracker.variantLayers).forEach(vid => {
         try { map.removeLayer(tracker.variantLayers[vid]); } catch {}
     });
+    Object.keys(tracker.variantCasings).forEach(vid => {
+        try { map.removeLayer(tracker.variantCasings[vid]); } catch {}
+    });
     tracker.variantLayers = {};
+    tracker.variantCasings = {};
     if (visible) {
         (group.route.variants || []).forEach(v => {
             if (!v.geometry) return;
-            const layer = L.geoJSON(
-                { type: 'Feature', geometry: v.geometry, properties: {} },
-                {
-                    pane: 'routePane',
-                    style: {
-                        color: group.color, weight: 4, opacity: 0.9,
-                        dashArray: '8,6', lineCap: 'round', lineJoin: 'round'
-                    }
-                }
-            ).addTo(map);
+            const { casing, line } = buildRoutePair(v.geometry, group, true);
             const dirLabel = v.direction === 'inbound' ? 'volta' : 'ida';
-            layer.bindTooltip(`${escapeHtml(group.name)} — variante (${dirLabel})`, { sticky: true });
-            layer.on('mouseover', () => layer.setStyle({ weight: 6 }));
-            layer.on('mouseout',  () => layer.setStyle({ weight: 4 }));
-            tracker.variantLayers[v.id] = layer;
+            line.bindTooltip(`${escapeHtml(group.name)} — variante (${dirLabel})`, { sticky: true });
+            tracker.variantLayers[v.id]  = line;
+            tracker.variantCasings[v.id] = casing;
         });
     }
 
@@ -513,8 +546,10 @@ function renderGroupRoute(group) {
 function removeGroupRouteLayers(groupId) {
     const tracker = groupRouteLayers[groupId];
     if (!tracker) return;
-    if (tracker.trunkLayer) { try { map.removeLayer(tracker.trunkLayer); } catch {} }
-    Object.values(tracker.variantLayers || {}).forEach(l => { try { map.removeLayer(l); } catch {} });
+    if (tracker.trunkLayer)  { try { map.removeLayer(tracker.trunkLayer); }  catch {} }
+    if (tracker.trunkCasing) { try { map.removeLayer(tracker.trunkCasing); } catch {} }
+    Object.values(tracker.variantLayers  || {}).forEach(l => { try { map.removeLayer(l); } catch {} });
+    Object.values(tracker.variantCasings || {}).forEach(l => { try { map.removeLayer(l); } catch {} });
     delete groupRouteLayers[groupId];
 }
 
@@ -2812,16 +2847,29 @@ async function captureMapToImage({ bounds, width, height, stationMarkers = [], i
             } catch (_) {}
         });
 
-        // Routes (trunk + variants), drawn above isochrones and below station dots
+        // Routes (trunk + variants), drawn above isochrones and below station dots.
+        // Para cada rota: primeiro um casing branco translúcido (halo) e depois a
+        // linha colorida — espelha o que se vê no mapa principal e mantém as rotas
+        // legíveis sobre as isócronas.
         routeLines.forEach(({ feature, color, kind }) => {
             if (!feature) return;
             try {
                 const isVariant = kind === 'variant';
+                const baseWeight = isVariant ? 3 : 4;
+                L.geoJSON(feature, {
+                    style: {
+                        color: '#ffffff',
+                        weight: baseWeight + 4,
+                        opacity: 0.55,
+                        lineCap: 'round',
+                        lineJoin: 'round',
+                    },
+                }).addTo(offMap);
                 L.geoJSON(feature, {
                     style: {
                         color: color || '#667eea',
-                        weight: isVariant ? 3 : 4,
-                        opacity: 0.9,
+                        weight: baseWeight,
+                        opacity: 0.95,
                         dashArray: isVariant ? '6,5' : null,
                         lineCap: 'round',
                         lineJoin: 'round',
