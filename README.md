@@ -33,7 +33,8 @@ Ferramenta web interativa para avaliar a cobertura pedonal de redes de transport
 - **Painel flutuante de edição**: clicar numa BGRI abre um painel sobreposto ao mapa com densidade atual, tipo de uso do solo e cobertura edificável; fecha com ESC ou clique fora
 - Aplicar **overrides de densidade** por subsecção; reverter para valores originais dos censos
 - **Novas urbanizações**: desenhar um polígono no mapa, definir tipo de densidade e cobertura do solo, obter estimativa de população instantânea; nome editável inline
-- As novas urbanizações **substituem** a população das BGRI que cobrem (sem dupla contagem)
+- A população das urbanizações é **recortada pelas isócronas reais** (5 min e anel 10 min) — só conta o que cai dentro de uma catchment; o que sobra fora não é atribuído a ninguém
+- As novas urbanizações **descontam** a população BGRI já existente na zona sobreposta (sem dupla contagem)
 - Resumo do cenário: população base (censos) vs. projetada vs. delta
 - Recalcular catchment com as alterações do cenário ativas
 - **Zonas com menor cobertura de paragens**: secção no fundo do tab com a lista de subsecções (BGRI) com ≥ 50 hab. não cobertas por qualquer isócrona de 10 min; clique numa zona para a destacar no mapa (laranja) e centrar a vista; clique novamente para desselecionar

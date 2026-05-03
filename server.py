@@ -787,39 +787,126 @@ def calculate_population():
                     except Exception:
                         pass
 
-    # Add new urbanization populations — attribute to the nearest station's 5-min catchment
-    # Also track per-group urbanization attribution for the per-group totals below
-    urb_pop_by_group = {}
+    # Add new urbanization populations.
+    # Estratégia: recortar o polígono da urbanização pelas isócronas reais
+    # (5 min e anel 10 min) em vez de atribuir tudo à estação mais próxima
+    # do centróide. Distribui-se a população proporcionalmente à área de
+    # cada interseção, assumindo densidade uniforme dentro do polígono.
+    # Para evitar dupla contagem com a BGRI subjacente, subtrai-se a
+    # população BGRI proporcional à sobreposição (respeita density_overrides
+    # através de get_pop_for_row).
+    # Guardamos cada urbanização processada (geometria em CRS de censos +
+    # densidade líquida) para que a atribuição por grupo, mais abaixo, use
+    # a mesma lógica de interseção com a união do grupo.
+    urb_processed = []  # [{'geom': shapely, 'density': hab/m²}]
     for urb_feature in new_urbanization_features:
         try:
-            urb_pop = urb_feature.get('properties', {}).get('estimated_pop', 0)
-            if urb_pop <= 0:
+            estimated_pop = float(urb_feature.get('properties', {}).get('estimated_pop', 0) or 0)
+            if estimated_pop <= 0:
                 continue
-            urb_geom = shape(urb_feature['geometry'])
-            urb_centroid = urb_geom.centroid
-            # Find the nearest station
-            best_id = None
-            best_group = None
-            best_dist = float('inf')
+            urb_geom_wgs = shape(urb_feature['geometry'])
+            urb_gdf = gpd.GeoDataFrame([1], geometry=[urb_geom_wgs], crs="EPSG:4326")
+            if CENSUS_DATA.crs != "EPSG:4326":
+                urb_gdf = urb_gdf.to_crs(CENSUS_DATA.crs)
+            urb_geom = urb_gdf.geometry.iloc[0]
+            if urb_geom.is_empty or urb_geom.area <= 0:
+                continue
+
+            # 1. Deduzir população BGRI já contabilizada na área sobreposta
+            bgri_overlap_pop = 0.0
+            try:
+                overlapping_bgris = CENSUS_DATA[CENSUS_DATA.geometry.intersects(urb_geom)]
+                for _, brow in overlapping_bgris.iterrows():
+                    if brow.geometry.area <= 0:
+                        continue
+                    inter = brow.geometry.intersection(urb_geom)
+                    if inter.is_empty or inter.area <= 0:
+                        continue
+                    bgri_overlap_pop += get_pop_for_row(brow) * (inter.area / brow.geometry.area)
+            except Exception as e:
+                print(f"Aviso: falha a calcular sobreposição BGRI da urbanização: {e}")
+
+            net_pop = max(0.0, estimated_pop - bgri_overlap_pop)
+            if net_pop <= 0:
+                continue
+            d_urb = net_pop / urb_geom.area  # densidade líquida (hab/m²)
+
+            # 2. Atribuição per-estação por proximidade (Voronoi)
+            #    Para cada estação calcular interseção com buffer_5min e
+            #    com o anel 10 min próprio; resolver sobreposições entre
+            #    estações no mesmo ponto pelo centróide mais próximo.
+            slices_5 = []   # [{'pi', 'inter'}]
+            slices_10 = []
             for pi in point_info:
-                d = pi['point'].distance(
-                    gpd.GeoDataFrame([1], geometry=[Point(urb_centroid.x, urb_centroid.y)], crs="EPSG:4326")
-                        .to_crs(CENSUS_DATA.crs).geometry.iloc[0]
-                ) if CENSUS_DATA.crs != "EPSG:4326" else pi['point'].distance(Point(urb_centroid.x, urb_centroid.y))
-                if d < best_dist:
-                    best_dist = d
-                    best_id = pi['id']
-                    best_group = pi.get('group_id')
-            if best_id is not None:
-                # Add to the nearest station result
-                for r in results:
-                    if r['id'] == best_id:
-                        r['population_5min'] += round(urb_pop)
-                        r['population_total'] += round(urb_pop)
-                        total_pop_5min += urb_pop
-                        break
-                if best_group is not None:
-                    urb_pop_by_group[best_group] = urb_pop_by_group.get(best_group, 0) + urb_pop
+                try:
+                    i5 = urb_geom.intersection(pi['buffer_5min'])
+                    i10 = urb_geom.intersection(pi['buffer_10min'])
+                    ring10 = i10.difference(i5) if not i5.is_empty else i10
+                    if not i5.is_empty and i5.area > 0:
+                        slices_5.append({'pi': pi, 'inter': i5})
+                    if not ring10.is_empty and ring10.area > 0:
+                        slices_10.append({'pi': pi, 'inter': ring10})
+                except Exception:
+                    pass
+
+            def _voronoi_resolve(items):
+                # Para cada slice, retira as zonas de sobreposição em que
+                # outro ponto está mais perto do centróide do overlap.
+                for item in items:
+                    unique = item['inter']
+                    for other in items:
+                        if other is item:
+                            continue
+                        if not unique.intersects(other['inter']):
+                            continue
+                        overlap = unique.intersection(other['inter'])
+                        if overlap.is_empty or overlap.area <= 0:
+                            continue
+                        cen = overlap.centroid
+                        if other['pi']['point'].distance(cen) < item['pi']['point'].distance(cen):
+                            unique = unique.difference(overlap)
+                    item['unique'] = unique
+
+            _voronoi_resolve(slices_5)
+            _voronoi_resolve(slices_10)
+
+            for item in slices_5:
+                u = item.get('unique')
+                if u is None or u.is_empty or u.area <= 0:
+                    continue
+                point_populations[item['pi']['id']]['5min'] += d_urb * u.area
+            for item in slices_10:
+                u = item.get('unique')
+                if u is None or u.is_empty or u.area <= 0:
+                    continue
+                point_populations[item['pi']['id']]['10min'] += d_urb * u.area
+
+            # Refletir os incrementos em `results` (já populado acima)
+            for r in results:
+                pid = r['id']
+                pop5 = point_populations[pid]['5min']
+                pop10 = point_populations[pid]['10min']
+                r['population_5min'] = round(pop5)
+                r['population_10min'] = round(pop10)
+                r['population_total'] = round(pop5 + pop10)
+
+            # 3. Totais globais via união das isócronas
+            if union_5min is not None:
+                try:
+                    gi5 = urb_geom.intersection(union_5min)
+                    if not gi5.is_empty:
+                        total_pop_5min += d_urb * gi5.area
+                except Exception:
+                    pass
+            if secondary_zone is not None and not getattr(secondary_zone, 'is_empty', True):
+                try:
+                    gi10 = urb_geom.intersection(secondary_zone)
+                    if not gi10.is_empty:
+                        total_pop_10min += d_urb * gi10.area
+                except Exception:
+                    pass
+
+            urb_processed.append({'geom': urb_geom, 'density': d_urb})
         except Exception as e:
             print(f"Erro ao processar urbanização: {e}")
 
@@ -862,8 +949,28 @@ def calculate_population():
                                 inter = row.geometry.intersection(secondary)
                                 if not inter.is_empty:
                                     gpop10 += get_pop_for_row(row) * inter.area / row.geometry.area
-                # Adicionar urbanizações atribuídas a estações deste grupo (entram em 5 min)
-                gpop5 += urb_pop_by_group.get(gid, 0)
+                # Adicionar urbanizações: recorte pela união do grupo
+                # (mesma lógica do total global, mas restrita às isócronas
+                # das estações deste grupo). Densidade líquida já tem em
+                # conta a sobreposição BGRI.
+                if urb_processed:
+                    g_secondary = None
+                    if gu10 is not None and not getattr(gu10, 'is_empty', True):
+                        g_secondary = (gu10.difference(gu5)
+                                       if (gu5 is not None and not getattr(gu5, 'is_empty', True))
+                                       else gu10)
+                    for u in urb_processed:
+                        try:
+                            if gu5 is not None and not getattr(gu5, 'is_empty', True):
+                                gi5 = u['geom'].intersection(gu5)
+                                if not gi5.is_empty and gi5.area > 0:
+                                    gpop5 += u['density'] * gi5.area
+                            if g_secondary is not None and not getattr(g_secondary, 'is_empty', True):
+                                gi10 = u['geom'].intersection(g_secondary)
+                                if not gi10.is_empty and gi10.area > 0:
+                                    gpop10 += u['density'] * gi10.area
+                        except Exception:
+                            pass
                 groups_totals.append({
                     'id': gid,
                     'total_population_5min': round(gpop5),

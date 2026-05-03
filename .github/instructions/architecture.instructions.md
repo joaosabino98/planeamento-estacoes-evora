@@ -53,13 +53,16 @@ Response (extra fields beyond per-point totals):
 **Algorithm (`server.py::calculate_population`):**
 1. Reproject census to ORS CRS (EPSG:4326).
 2. Apply `density_overrides` per BGRI (replaces `N_INDIVIDUOS`).
-3. Compute `urb_union` = union of all urbanisation polygons.
-4. Subtract `urb_union` from census intersections **before** attributing pop (replacement, not additive).
-5. Distribute urbanisation `estimatedPop` to isochrones proportionally by overlap fraction.
-6. Per-station population uses **proximity to centroid** to deduplicate overlapping isochrones (Voronoi-like). Implemented in `_assign_population_voronoi(census_subset, point_info, point_populations, get_pop, slot, get_intersection)` — called once for the 5-min ring (`get_intersection = row ∩ buffer_5min`) and once for the secondary 10-min ring (`row ∩ buffer_10min − row ∩ buffer_5min`).
-7. Global totals (`total_population_*`) use `union_5min` / `union_10min` to avoid any double-counting.
-8. Per-group totals (`groups[]`) use the same union method scoped to each group's stations — the `5+10` sum is ≤ the real population covered by the group, and with a single group it matches the global total exactly. Urbanisations are attributed to the nearest station's group.
-9. `uncovered_bgris`: BGRIs with no intersection with `union_10min` AND `N_INDIVIDUOS ≥ 50`, sorted desc, top 30.
+3. Per-station population uses **proximity to centroid** to deduplicate overlapping isochrones (Voronoi-like). Implemented in `_assign_population_voronoi(census_subset, point_info, point_populations, get_pop, slot, get_intersection)` — called once for the 5-min ring (`get_intersection = row ∩ buffer_5min`) and once for the secondary 10-min ring (`row ∩ buffer_10min − row ∩ buffer_5min`).
+4. Global totals (`total_population_*`) use `union_5min` / `union_10min` to avoid any double-counting.
+5. **Urbanisation attribution** — for each `new_urbanization_features` polygon:
+   1. Compute `bgri_overlap_pop = Σ pop(bgri) × area(bgri ∩ urb) / area(bgri)` (respecting `density_overrides`).
+   2. `net_pop = max(0, estimated_pop − bgri_overlap_pop)` and `d_urb = net_pop / area(urb)` (uniform density, in CENSUS CRS).
+   3. Per-station: clip `urb` by `buffer_5min` and by the station's 10-min ring; resolve overlaps between stations via centroid-distance Voronoi; add `d_urb × area_unique` to `point_populations[id][slot]`.
+   4. Global: add `d_urb × area(urb ∩ union_5min)` to `total_pop_5min` and `d_urb × area(urb ∩ secondary_zone)` to `total_pop_10min`. Urbanisations entirely outside any isochrone contribute zero.
+   5. Per-group: same intersection done against `gu5` / `gu10` of each group (so a single urb can split between groups proportionally to area).
+6. Per-group totals (`groups[]`) use the same union method scoped to each group's stations — the `5+10` sum is ≤ the real population covered by the group, and with a single group it matches the global total exactly.
+7. `uncovered_bgris`: BGRIs with no intersection with `union_10min` AND `N_INDIVIDUOS ≥ 50`, sorted desc, top 30.
 
 **Census fields:**
 - Population: `N_INDIVIDUOS` (resolved at startup into `POP_COLUMN`)
@@ -336,7 +339,9 @@ These rules have dedicated asserts — just run `pytest -q` to verify. If one fa
 | Per-group totals via union | `tests/test_population.py::test_group_totals_use_union_not_sum_per_station` | `groups[]` is computed by union scoped to the group's stations; never `Σ pop_5min + Σ pop_10min` per-station. |
 | `uncovered_bgris` always present | `tests/test_population.py::test_uncovered_bgris_always_returned` | Endpoint always returns it, with `population ≥ 50`, top 30 (cap `?uncovered_limit=N` up to 500). |
 | Density override replaces pop | `tests/test_population.py::test_density_override_replaces_population` | `density_overrides[bgri]` replaces `N_INDIVIDUOS`. |
-| Urbanisation enters nearest group's 5 min | `tests/test_population.py::test_urbanization_adds_population_to_5min` | Urbanisation pop → global 5 min + 5 min of the nearest station's group. |
+| Urbanisation enters nearest group's 5 min | `tests/test_population.py::test_urbanization_adds_population_to_5min` | Urbanisation pop → 5 min of overlapping station(s), distributed by area of `urb ∩ buffer_5min`. |
+| Urbanisation outside isochrones contributes 0 | `tests/test_population.py::test_urbanization_outside_isochrones_not_counted` | Urb fully outside `union_10min` adds nothing — no centroid-based fallback. |
+| Urbanisation deducts overlapping BGRI | `tests/test_population.py::test_urbanization_deducts_existing_bgri_population` | `net_pop = max(0, estimated_pop − Σ pop(bgri) × overlap_ratio)` (avoids double counting). |
 | Shannon H with `residents=0` | `tests/test_shannon.py::test_residents_zero_with_jobs_classifies_as_employment_node` | `compute_shannon_h(0, jobs>0)` → ratio=1.0; `self_sufficiency=1.0` (not 0). |
 | `self_sufficiency=1.0` when `residents=0` | `tests/test_endpoints.py::test_jobs_endpoint_self_sufficiency_one_when_residents_zero` | Same, at the endpoint. |
 | Fallback never cached | `tests/test_endpoints.py::test_isochrones_fallback_is_not_cached` | Only real ORS results enter `data/isochrone_cache.json`. |
