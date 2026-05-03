@@ -26,6 +26,10 @@ const GROUP_COLORS = [
     '#2d3748', // dark
 ];
 
+// ==================== Inline SVG icons ====================
+const ICON_EYE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a19.78 19.78 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a19.86 19.86 0 0 1-3.17 4.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+
 // ==================== Density Types ====================
 const DENSITY_TYPES = [
     { id: 0, label: 'Área desocupada',               residents_ha: 0,   color: '#e2e8f0' },
@@ -68,6 +72,7 @@ let drawControl = null;
 let drawnItems = null;
 let isDrawingUrbanization = false;
 let pendingUrbanizationGeometry = null;
+let editingUrbanizationId = null;
 
 // -- Jobs / Mix de Usos --
 let jobsData = {};            // { stationId: { jobs_total, jobs_breakdown, shannon_h, tod_classification, self_sufficiency, poi_count, low_coverage_warning, pois[] } }
@@ -375,7 +380,7 @@ function renderGroups() {
                 <div class="group-color-swatch" style="background:${g.color}" data-action="color" title="Mudar cor"></div>
                 <input class="group-name-input" value="${escapeHtml(g.name)}" data-action="rename" />
                 <span class="group-badge">${count}</span>
-                <button class="group-btn btn-visibility" data-action="visibility" title="${g.visible ? 'Ocultar' : 'Mostrar'}">${g.visible ? '👁️' : '👁️‍🗨️'}</button>
+                <button class="group-btn btn-visibility" data-action="visibility" title="${g.visible ? 'Ocultar' : 'Mostrar'}">${g.visible ? ICON_EYE : ICON_EYE_OFF}</button>
                 <button class="group-btn btn-duplicate-group" data-action="duplicate" title="Duplicar grupo">⎘</button>
                 <button class="group-btn btn-delete-group" data-action="delete" title="Apagar grupo">×</button>
             </div>
@@ -1686,10 +1691,26 @@ function startDrawUrbanization() {
     drawHandler.enable();
 }
 
-function showUrbanizationModal() {
+function showUrbanizationModal(existing = null) {
     const modal = document.getElementById('urbanization-modal');
+    const titleEl = modal.querySelector('h2');
+    const btnConfirm = document.getElementById('btn-create-urbanization');
+    if (existing) {
+        editingUrbanizationId = existing.id;
+        pendingUrbanizationGeometry = existing.geometry;
+        document.getElementById('urb-name').value = existing.name;
+        document.getElementById('urb-density-type').value = String(existing.densityType);
+        document.getElementById('urb-coverage').value = existing.coverage;
+        document.getElementById('urb-diffuse').checked = !!existing.diffuse;
+        if (titleEl) titleEl.textContent = 'Editar Urbanização';
+        if (btnConfirm) btnConfirm.textContent = 'Guardar';
+    } else {
+        editingUrbanizationId = null;
+        document.getElementById('urb-name').value = `Urbanização ${newUrbanizations.length + 1}`;
+        if (titleEl) titleEl.textContent = 'Nova Urbanização';
+        if (btnConfirm) btnConfirm.textContent = 'Criar';
+    }
     modal.classList.remove('hidden');
-    document.getElementById('urb-name').value = `Urbanização ${newUrbanizations.length + 1}`;
     updateUrbanizationEstimate();
 }
 
@@ -1717,6 +1738,11 @@ function updateUrbanizationEstimate() {
 function confirmUrbanization() {
     if (!pendingUrbanizationGeometry) return;
 
+    const editingIdx = editingUrbanizationId !== null
+        ? newUrbanizations.findIndex(u => u.id === editingUrbanizationId)
+        : -1;
+    const isEditing = editingIdx !== -1;
+
     const name = document.getElementById('urb-name').value || `Urbanização ${newUrbanizations.length + 1}`;
     const typeIdx = parseInt(document.getElementById('urb-density-type').value);
     const coverage = parseInt(document.getElementById('urb-coverage').value);
@@ -1727,8 +1753,15 @@ function confirmUrbanization() {
     const area_ha = area / 10000;
     const est = Math.round(dt.residents_ha * area_ha * (coverage / 100));
 
+    // If editing, remove the old layers from the map and from the global tracker
+    if (isEditing) {
+        const old = newUrbanizations[editingIdx];
+        old.layers.forEach(l => { try { map.removeLayer(l); } catch {} });
+        urbanizationLayers = urbanizationLayers.filter(l => !old.layers.includes(l));
+    }
+
     const urb = {
-        id: Date.now(),
+        id: isEditing ? editingUrbanizationId : Date.now(),
         name,
         geometry: pendingUrbanizationGeometry,
         densityType: typeIdx,
@@ -1779,11 +1812,17 @@ function confirmUrbanization() {
     }
 
     newUrbanizations.push(urb);
+    if (isEditing) {
+        // Replace the old entry with the rebuilt one (preserving its position in the list)
+        const last = newUrbanizations.pop();
+        newUrbanizations[editingIdx] = last;
+    }
 
     // Cleanup
     drawnItems.clearLayers();
     pendingUrbanizationGeometry = null;
     isDrawingUrbanization = false;
+    editingUrbanizationId = null;
     document.getElementById('urbanization-modal').classList.add('hidden');
     renderUrbanizations();
     refreshAugmentedIsochrones();
@@ -1794,6 +1833,7 @@ function cancelUrbanization() {
     drawnItems.clearLayers();
     pendingUrbanizationGeometry = null;
     isDrawingUrbanization = false;
+    editingUrbanizationId = null;
     document.getElementById('urbanization-modal').classList.add('hidden');
 }
 
@@ -1822,7 +1862,7 @@ function renderUrbanizations() {
                     <input class="urbanization-name-input" value="${escapeHtml(u.name)}" data-urb-id="${u.id}">
                     <button class="btn-remove" onclick="removeUrbanization(${u.id})" title="Remover">×</button>
                 </div>
-                <div class="urbanization-details">
+                <div class="urbanization-details" data-urb-id="${u.id}" title="Editar urbanização">
                     <span>${dt.label} · ${u.coverage}% cobertura</span>
                     <span><strong>${formatNumber(u.estimatedPop)}</strong> habitantes estimados</span>
                 </div>
@@ -1834,6 +1874,14 @@ function renderUrbanizations() {
     container.querySelectorAll('.urbanization-name-input').forEach(input => {
         input.addEventListener('change', () => {
             renameUrbanization(parseFloat(input.dataset.urbId), input.value);
+        });
+    });
+
+    // Click on the details row opens the edit modal
+    container.querySelectorAll('.urbanization-details').forEach(row => {
+        row.addEventListener('click', () => {
+            const urb = newUrbanizations.find(u => u.id === parseFloat(row.dataset.urbId));
+            if (urb) showUrbanizationModal(urb);
         });
     });
 }

@@ -295,7 +295,7 @@ densityOverrides["150010201001"] = {
 
 ## Design tokens (`style.css`)
 
-The `:root` block defines all colours, radii, font sizes and spacing. **Never use raw hex/px in rules — always reference variables.**
+The `:root` block defines all colours, radii, **typography** and spacing. **Never use raw hex/px in rules — always reference variables.** Component CSS must read every `font-size`, `font-weight`, `line-height` and `letter-spacing` from the typography tokens (or use the `.t-*` utility classes); hardcoded type values are a regression.
 
 ```css
 :root {
@@ -308,14 +308,30 @@ The `:root` block defines all colours, radii, font sizes and spacing. **Never us
   /* Text: --c-text-primary, --c-text-secondary, --c-text-muted, --c-text-disabled */
   /* Surfaces: --c-bg-subtle, --c-bg-hover, --c-border, --c-border-faint */
   /* --radius-sm/md/lg/full | --shadow-xs/sm/md/lg */
-  /* --font-xs(11) … --font-2xl(28) | --sp-1(4) … --sp-6(24) */
+
+  /* Typography (single source of truth) */
+  --font-sans / --font-mono                          /* families */
+  --font-xxs(10) --font-xs(11) --font-sm(12)
+  --font-base(13) --font-md(14) --font-lg(16)
+  --font-xl(18) --font-2xl(22) --font-3xl(28)
+  --font-h1(19)                                      /* sidebar title */
+  --fw-regular(400) --fw-medium(500) --fw-semibold(600)
+  --fw-bold(700)   --fw-extrabold(800)
+  --lh-tight(1.2) --lh-snug(1.4) --lh-normal(1.55)
+  --ls-tight(-0.3px) --ls-wide(0.05em) --ls-wider(0.07em)
+
+  /* --sp-1(4) … --sp-6(24) */
 }
 ```
 
+Typography utility classes (compose on elements instead of redeclaring rules):
+`.t-h1` `.t-h2` `.t-h3` `.t-kicker` `.t-body` `.t-body-sm` `.t-caption` `.t-meta`
+`.t-metric-lg` `.t-metric` `.t-metric-sm` and `.tabular-nums` (for any column of numbers that should align vertically — uses `font-variant-numeric: tabular-nums`).
+
 Section heading pattern (sidebar `h2`/`h3`):
 ```css
-font-size: var(--font-xs); font-weight: 700;
-text-transform: uppercase; letter-spacing: 0.07em;
+font-size: var(--font-xs); font-weight: var(--fw-bold);
+text-transform: uppercase; letter-spacing: var(--ls-wider);
 color: var(--c-text-muted);
 ```
 

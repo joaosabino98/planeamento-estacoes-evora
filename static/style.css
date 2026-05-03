@@ -43,16 +43,47 @@
     --shadow-md: 0 4px 12px rgba(0,0,0,.10), 0 2px 4px rgba(0,0,0,.06);
     --shadow-lg: 0 8px 28px rgba(0,0,0,.14), 0 2px 8px rgba(0,0,0,.08);
 
-    /* Font sizes */
-    --font-xs:  11px;
-    --font-sm:  12px;
-    --font-base:13px;
-    --font-md:  14px;
-    --font-lg:  16px;
-    --font-xl:  18px;
-    --font-2xl: 28px;
+    /* ----- Typography ----------------------------------------
+       Single source of truth for all type. Components must use
+       these tokens (or the semantic aliases below); never hardcode
+       font-size/font-weight/line-height in component rules.
+       --------------------------------------------------------- */
 
-    /* Spacing */
+    /* Font family */
+    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+    /* Sizes (primitive scale) */
+    --font-xxs:  10px;   /* tiny tags, micro-meta */
+    --font-xs:   11px;   /* labels, captions, kickers */
+    --font-sm:   12px;   /* secondary body, dense rows */
+    --font-base: 13px;   /* default body, buttons, inputs */
+    --font-md:   14px;   /* card titles, station names */
+    --font-lg:   16px;   /* highlighted values, modal subtitle */
+    --font-xl:   18px;   /* secondary metric numbers */
+    --font-2xl:  22px;   /* primary metric numbers */
+    --font-3xl:  28px;   /* hero metric */
+    --font-h1:   19px;   /* sidebar title */
+
+    /* Weights */
+    --fw-regular:   400;
+    --fw-medium:    500;
+    --fw-semibold:  600;
+    --fw-bold:      700;
+    --fw-extrabold: 800;
+
+    /* Line-heights */
+    --lh-tight:  1.2;
+    --lh-snug:   1.4;
+    --lh-normal: 1.55;
+
+    /* Letter-spacing */
+    --ls-tight:  -0.3px;
+    --ls-normal: 0;
+    --ls-wide:   0.05em;
+    --ls-wider:  0.07em;
+
+    /* ----- Spacing ----- */
     --sp-1: 4px;
     --sp-2: 8px;
     --sp-3: 12px;
@@ -60,6 +91,27 @@
     --sp-5: 20px;
     --sp-6: 24px;
 }
+
+/* ============================================================
+   Typography utility classes
+   Compose these on elements to get consistent type without
+   re-declaring font-size / font-weight per component.
+   ============================================================ */
+.t-h1        { font-size: var(--font-h1);   font-weight: var(--fw-bold);     letter-spacing: var(--ls-tight); line-height: var(--lh-tight); }
+.t-h2        { font-size: var(--font-lg);   font-weight: var(--fw-bold);     line-height: var(--lh-snug); }
+.t-h3        { font-size: var(--font-md);   font-weight: var(--fw-bold);     line-height: var(--lh-snug); }
+.t-kicker    { font-size: var(--font-xs);   font-weight: var(--fw-bold);     letter-spacing: var(--ls-wider); text-transform: uppercase; color: var(--c-text-muted); line-height: var(--lh-snug); }
+.t-body      { font-size: var(--font-base); font-weight: var(--fw-regular);  line-height: var(--lh-normal); }
+.t-body-sm   { font-size: var(--font-sm);   font-weight: var(--fw-regular);  line-height: var(--lh-normal); }
+.t-caption   { font-size: var(--font-xs);   font-weight: var(--fw-regular);  line-height: var(--lh-snug); color: var(--c-text-muted); }
+.t-meta      { font-size: var(--font-xxs);  font-weight: var(--fw-regular);  line-height: var(--lh-snug); color: var(--c-text-muted); }
+.t-metric-lg { font-size: var(--font-3xl);  font-weight: var(--fw-extrabold);letter-spacing: var(--ls-tight); line-height: var(--lh-tight); }
+.t-metric    { font-size: var(--font-2xl);  font-weight: var(--fw-bold);     line-height: var(--lh-tight); }
+.t-metric-sm { font-size: var(--font-xl);   font-weight: var(--fw-bold);     line-height: var(--lh-tight); }
+
+/* Tabular numbers — use on any column of numeric values that
+   should align vertically (metric cards, summary tables, etc.). */
+.tabular-nums { font-variant-numeric: tabular-nums; font-feature-settings: "tnum"; }
 
 /* ============================================================
    Reset
@@ -73,7 +125,10 @@
 html, body {
     margin: 0;
     padding: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    font-family: var(--font-sans);
+    font-size: var(--font-base);
+    font-weight: var(--fw-regular);
+    line-height: var(--lh-normal);
     height: 100%;
     width: 100%;
     overflow: hidden;
@@ -105,16 +160,17 @@ html, body {
 }
 
 .sidebar-header h1 {
-    font-size: 19px;
-    font-weight: 700;
-    letter-spacing: -0.3px;
+    font-size: var(--font-h1);
+    font-weight: var(--fw-bold);
+    letter-spacing: var(--ls-tight);
+    line-height: var(--lh-tight);
     margin-bottom: 2px;
 }
 
 .subtitle {
     font-size: var(--font-sm);
+    font-weight: var(--fw-regular);
     opacity: 0.85;
-    font-weight: 400;
 }
 
 /* ==================== Tabs ==================== */
@@ -131,7 +187,7 @@ html, body {
     background: var(--c-bg-subtle);
     border: none;
     font-size: var(--font-base);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     color: var(--c-text-muted);
     cursor: pointer;
     transition: all 0.15s;
@@ -224,10 +280,10 @@ html, body {
 }
 
 .stations-loading-msg {
-    font-size: 13px;
-    font-weight: 500;
+    font-size: var(--font-base);
+    font-weight: var(--fw-medium);
+    line-height: var(--lh-normal);
     color: var(--c-text-secondary);
-    line-height: 1.55;
     margin: 0;
 }
 
@@ -254,7 +310,7 @@ html, body {
     right: 10px;
     background: none;
     border: none;
-    font-size: 18px;
+    font-size: var(--font-xl);
     line-height: 1;
     cursor: pointer;
     color: var(--c-text-muted, #a0aec0);
@@ -269,15 +325,15 @@ html, body {
 }
 
 .stations-error-icon {
-    font-size: 28px;
+    font-size: var(--font-3xl);
     line-height: 1;
 }
 
 .stations-error-msg {
-    font-size: 13px;
-    font-weight: 500;
+    font-size: var(--font-base);
+    font-weight: var(--fw-medium);
+    line-height: var(--lh-normal);
     color: var(--c-danger, #c53030);
-    line-height: 1.55;
     margin: 0;
 }
 
@@ -288,8 +344,8 @@ html, body {
     color: #fff;
     border: none;
     border-radius: var(--radius-sm, 6px);
-    font-size: 13px;
-    font-weight: 600;
+    font-size: var(--font-base);
+    font-weight: var(--fw-semibold);
     cursor: pointer;
     transition: background 0.15s;
 }
@@ -327,10 +383,10 @@ html, body {
 
 .section-header h2 {
     font-size: var(--font-xs);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     color: var(--c-text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.07em;
+    letter-spacing: var(--ls-wider);
 }
 
 .btn-small {
@@ -339,7 +395,7 @@ html, body {
     border: none;
     border-radius: var(--radius-full);
     cursor: pointer;
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     transition: all 0.15s;
     text-transform: uppercase;
     letter-spacing: 0.03em;
@@ -410,7 +466,7 @@ html, body {
     border: none;
     background: transparent;
     font-size: var(--font-base);
-    font-weight: 500;
+    font-weight: var(--fw-medium);
     color: var(--c-text-primary);
     min-width: 0;
     outline: none;
@@ -429,7 +485,7 @@ html, body {
     font-size: var(--font-xs);
     padding: 2px 7px;
     border-radius: var(--radius-full);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     flex-shrink: 0;
 }
 
@@ -442,6 +498,10 @@ html, body {
     opacity: 0.5;
     transition: opacity 0.15s;
     flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
 }
 
 .group-btn:hover {
@@ -449,17 +509,21 @@ html, body {
 }
 
 .group-btn.btn-visibility {
-    font-size: var(--font-base);
+    color: var(--c-text-secondary);
+}
+
+.group-btn.btn-visibility svg {
+    display: block;
 }
 
 .group-btn.btn-delete-group {
     color: var(--c-red);
-    font-size: 15px;
+    font-size: var(--font-md);
 }
 
 .group-btn.btn-duplicate-group {
     color: var(--c-text-secondary);
-    font-size: 15px;
+    font-size: var(--font-md);
 }
 
 /* Color picker dropdown */
@@ -493,11 +557,11 @@ html, body {
 /* ==================== Stats ==================== */
 .stats-section h2 {
     font-size: var(--font-xs);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     margin-bottom: var(--sp-3);
     color: var(--c-text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.07em;
+    letter-spacing: var(--ls-wider);
 }
 
 .stat-card {
@@ -538,7 +602,9 @@ html, body {
 
 .coverage-value {
     font-size: var(--font-sm);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
     color: var(--c-text-primary);
     text-align: right;
 }
@@ -574,14 +640,14 @@ html, body {
 }
 
 .group-stat-name {
-    font-weight: 600;
-    font-size: 13px;
-    color: #2d3748;
+    font-weight: var(--fw-semibold);
+    font-size: var(--font-base);
+    color: var(--c-text-primary);
 }
 
 .group-stat-count {
-    font-size: 11px;
-    color: #718096;
+    font-size: var(--font-xs);
+    color: var(--c-text-muted);
     margin-left: auto;
 }
 
@@ -589,23 +655,29 @@ html, body {
     font-size: var(--font-xs);
     color: var(--c-text-muted);
     margin-bottom: var(--sp-2);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: var(--ls-wide);
 }
 
 .stat-value {
-    font-size: var(--font-2xl);
-    font-weight: 800;
+    font-size: var(--font-3xl);
+    font-weight: var(--fw-extrabold);
     color: var(--c-text-primary);
     margin-bottom: var(--sp-3);
     letter-spacing: -0.5px;
+    line-height: var(--lh-tight);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
 }
 
 .stat-value-sm {
     font-size: var(--font-xl);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     color: var(--c-text-primary);
+    line-height: var(--lh-tight);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
 }
 
 .stat-breakdown {
@@ -629,25 +701,27 @@ html, body {
 }
 
 .breakdown-value {
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     color: var(--c-text-primary);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
 }
 
 .breakdown-item.is-total {
-    font-weight: 700;
+    font-weight: var(--fw-bold);
 }
 
 /* Tier coloring (used in jobs section, threshold-based) */
-.tier-good  { color: var(--c-green); font-weight: 700; }
-.tier-warn  { color: var(--c-amber); font-weight: 700; }
-.tier-bad   { color: var(--c-red);   font-weight: 700; }
+.tier-good  { color: var(--c-green); font-weight: var(--fw-bold); }
+.tier-warn  { color: var(--c-amber); font-weight: var(--fw-bold); }
+.tier-bad   { color: var(--c-red);   font-weight: var(--fw-bold); }
 .tier-good-bg { background: var(--c-green); }
 .tier-warn-bg { background: var(--c-amber); }
 .tier-bad-bg  { background: var(--c-red);   }
 
 .tod-tag {
-    font-size: 10px;
-    font-weight: 400;
+    font-size: var(--font-xxs);
+    font-weight: var(--fw-regular);
     color: var(--c-text-muted);
     margin-left: 2px;
 }
@@ -655,11 +729,11 @@ html, body {
 /* ==================== Stations List ==================== */
 .stations-list h3 {
     font-size: var(--font-xs);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     margin-bottom: var(--sp-3);
     color: var(--c-text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.07em;
+    letter-spacing: var(--ls-wider);
 }
 
 .stations-container {
@@ -704,9 +778,9 @@ html, body {
 }
 
 .station-name {
-    font-weight: 600;
-    color: #2d3748;
-    font-size: 14px;
+    font-weight: var(--fw-semibold);
+    color: var(--c-text-primary);
+    font-size: var(--font-md);
     display: flex;
     align-items: center;
     gap: 6px;
@@ -728,12 +802,12 @@ html, body {
     width: 22px;
     height: 22px;
     cursor: pointer;
-    font-size: 13px;
+    font-size: var(--font-base);
     display: flex;
     align-items: center;
     justify-content: center;
     transition: all 0.15s;
-    font-weight: 700;
+    font-weight: var(--fw-bold);
 }
 
 .btn-remove:hover {
@@ -746,7 +820,7 @@ html, body {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    font-size: 12px;
+    font-size: var(--font-sm);
 }
 
 .station-stat-row {
@@ -764,7 +838,7 @@ html, body {
     border-top: 2px solid var(--c-border);
     margin-top: var(--sp-1);
     padding-top: var(--sp-2);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
 }
 
 .station-stat-row.is-sub .station-stat-label {
@@ -785,8 +859,10 @@ html, body {
 }
 
 .station-stat-value {
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     color: var(--c-text-primary);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
 }
 
 /* ==================== Map ==================== */
@@ -819,7 +895,7 @@ html, body {
     border-radius: var(--radius-md);
     padding: 8px 16px;
     font-size: var(--font-sm);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     cursor: pointer;
     box-shadow: var(--shadow-sm);
     transition: all 0.15s;
@@ -854,11 +930,11 @@ html, body {
 
 .density-legend h2 {
     font-size: var(--font-xs);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     color: var(--c-text-muted);
     margin-bottom: var(--sp-3);
     text-transform: uppercase;
-    letter-spacing: 0.07em;
+    letter-spacing: var(--ls-wider);
 }
 
 .density-types-list {
@@ -892,39 +968,115 @@ html, body {
 
 .density-type-label {
     flex: 1;
-    color: #2d3748;
+    color: var(--c-text-primary);
 }
 
 .density-type-value {
-    color: #718096;
-    font-weight: 600;
+    color: var(--c-text-muted);
+    font-weight: var(--fw-semibold);
     white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
 }
 
-/* Scenario summary */
+/* ============================================================
+   Scenario summary (Cenário Urbano tab)
+   2-column grid: labels left, values right-aligned with
+   tabular numerals so digits line up vertically.
+   ============================================================ */
 .scenario-summary {
     margin-bottom: var(--sp-5);
 }
 
 .scenario-summary h2 {
     font-size: var(--font-xs);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     color: var(--c-text-muted);
     margin-bottom: var(--sp-3);
     text-transform: uppercase;
-    letter-spacing: 0.07em;
+    letter-spacing: var(--ls-wider);
 }
+
+.scenario-summary .stat-card {
+    padding: var(--sp-2) var(--sp-4);
+    display: grid;
+    grid-template-columns: 1fr auto;
+    column-gap: var(--sp-4);
+    row-gap: 0;
 }
 
 .scenario-stat-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 0;
+    display: contents;
+}
+
+.scenario-stat-row > .stat-label {
+    grid-column: 1;
+    align-self: center;
+    padding: var(--sp-2) 0;
+    margin: 0;
+    font-size: var(--font-xs);
+    font-weight: var(--fw-bold);
+    color: var(--c-text-muted);
+    text-transform: uppercase;
+    letter-spacing: var(--ls-wide);
     border-bottom: 1px solid var(--c-border-faint);
 }
 
-.scenario-stat-row:last-child {
+.scenario-stat-row > .stat-value-sm {
+    grid-column: 2;
+    align-self: center;
+    padding: var(--sp-2) 0;
+    text-align: right;
+    font-size: var(--font-md);
+    font-weight: var(--fw-bold);
+    color: var(--c-text-primary);
+    line-height: var(--lh-tight);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    border-bottom: 1px solid var(--c-border-faint);
+}
+
+/* Last data row (Diferença) drops the divider before the H block */
+.scenario-stat-row:nth-last-child(2) > .stat-label,
+.scenario-stat-row:nth-last-child(2) > .stat-value-sm {
+    border-bottom: none;
+}
+
+/* The Δ Mix de usos (H) row is special: full-width caption-like cell */
+#scenario-h-row {
+    grid-column: 1 / -1;
+    display: block;
+    padding: var(--sp-3) 0 var(--sp-1);
+    margin-top: var(--sp-2);
+    border-top: 1px dashed var(--c-border);
+    border-bottom: none;
+}
+
+#scenario-h-row > .stat-label {
+    grid-column: auto;
+    display: block;
+    padding: 0 0 var(--sp-1);
+    font-size: var(--font-xs);
+    font-weight: var(--fw-semibold);
+    text-transform: none;
+    letter-spacing: normal;
+    color: var(--c-text-muted);
+    cursor: help;
+    text-decoration: underline dotted var(--c-text-muted);
+    border-bottom: none;
+}
+
+#scenario-h-row > .stat-value-sm,
+#scenario-delta-h {
+    grid-column: auto;
+    display: block;
+    padding: 0;
+    text-align: left;
+    font-size: var(--font-sm);
+    font-weight: var(--fw-semibold);
+    color: var(--c-text-secondary);
+    line-height: var(--lh-snug);
+    word-break: break-word;
     border-bottom: none;
 }
 
@@ -936,7 +1088,7 @@ html, body {
     border: none;
     border-radius: var(--radius-md);
     font-size: var(--font-md);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     cursor: pointer;
     margin-top: var(--sp-3);
     transition: background 0.15s;
@@ -955,7 +1107,7 @@ html, body {
     border: 1.5px solid var(--c-red);
     border-radius: var(--radius-md);
     font-size: var(--font-sm);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     cursor: pointer;
     margin-top: var(--sp-2);
     transition: all 0.15s;
@@ -975,7 +1127,7 @@ html, body {
     align-items: center;
     gap: var(--sp-2);
     margin: var(--sp-2) 0 var(--sp-3) 0;
-    font-size: var(--fs-xs);
+    font-size: var(--font-xs);
     color: var(--c-text-muted);
     cursor: pointer;
     user-select: none;
@@ -1008,8 +1160,8 @@ html, body {
 }
 
 .urbanization-name-input {
-    font-weight: 600;
-    font-size: 13px;
+    font-weight: var(--fw-semibold);
+    font-size: var(--font-base);
     color: #276749;
     border: none;
     background: transparent;
@@ -1029,11 +1181,22 @@ html, body {
 }
 
 .urbanization-details {
-    font-size: 12px;
-    color: #718096;
+    font-size: var(--font-sm);
+    color: var(--c-text-muted);
     display: flex;
     flex-direction: column;
     gap: 2px;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    padding: 2px 4px;
+    margin: 0 -4px;
+    transition: background-color 0.15s;
+}
+
+.urbanization-details:hover {
+    background: rgba(39, 103, 73, 0.08);
 }
 
 /* Edit Panel */
@@ -1071,7 +1234,7 @@ html, body {
 
 .edit-panel-header h2 {
     font-size: var(--font-md);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     color: var(--c-text-primary);
     margin: 0;
 }
@@ -1079,8 +1242,8 @@ html, body {
 .btn-close-edit {
     background: none;
     border: none;
-    font-size: 16px;
-    color: #a0aec0;
+    font-size: var(--font-lg);
+    color: var(--c-text-disabled);
     cursor: pointer;
     padding: 2px 4px;
     border-radius: 4px;
@@ -1122,7 +1285,7 @@ html, body {
 }
 
 .edit-estimate-row .highlight {
-    font-size: 18px !important;
+    font-size: var(--font-xl) !important;
 }
 
 .edit-field {
@@ -1132,17 +1295,17 @@ html, body {
 .edit-field label {
     display: block;
     font-size: var(--font-xs);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     color: var(--c-text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: var(--ls-wide);
     margin-bottom: 3px;
 }
 
 .edit-field span {
     font-size: var(--font-md);
     color: var(--c-text-primary);
-    font-weight: 500;
+    font-weight: var(--fw-medium);
 }
 
 .edit-field select {
@@ -1169,8 +1332,8 @@ html, body {
 
 .highlight {
     color: var(--c-primary) !important;
-    font-weight: 700 !important;
-    font-size: 16px !important;
+    font-weight: var(--fw-bold) !important;
+    font-size: var(--font-lg) !important;
 }
 
 .edit-actions {
@@ -1187,7 +1350,7 @@ html, body {
     border: none;
     border-radius: var(--radius-sm);
     font-size: var(--font-base);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     cursor: pointer;
     transition: background 0.15s;
 }
@@ -1204,7 +1367,7 @@ html, body {
     border: 1px solid #fcd34d;
     border-radius: var(--radius-sm);
     font-size: var(--font-base);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     cursor: pointer;
     transition: background 0.15s;
 }
@@ -1221,7 +1384,7 @@ html, body {
     border: none;
     border-radius: var(--radius-sm);
     font-size: var(--font-base);
-    font-weight: 500;
+    font-weight: var(--fw-medium);
     cursor: pointer;
     transition: background 0.15s;
 }
@@ -1260,7 +1423,7 @@ html, body {
 
 .modal h2 {
     font-size: var(--font-lg);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     color: var(--c-text-primary);
     margin-bottom: var(--sp-4);
 }
@@ -1276,10 +1439,10 @@ html, body {
 .modal-field label {
     display: block;
     font-size: var(--font-xs);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     color: var(--c-text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: var(--ls-wide);
     margin-bottom: 4px;
 }
 
@@ -1320,7 +1483,7 @@ html, body {
     border: 1px solid #9ae6b4;
     border-radius: var(--radius-md);
     font-size: var(--font-md);
-    font-weight: 500;
+    font-weight: var(--fw-medium);
     color: #276749;
 }
 
@@ -1396,15 +1559,18 @@ html, body {
     font-size: var(--font-xs);
     color: var(--c-text-muted);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 700;
+    letter-spacing: var(--ls-wide);
+    font-weight: var(--fw-bold);
 }
 
 .jobs-global-value {
     font-size: var(--font-xl);
-    font-weight: 800;
+    font-weight: var(--fw-extrabold);
     color: var(--c-text-primary);
-    letter-spacing: -0.3px;
+    letter-spacing: var(--ls-tight);
+    line-height: var(--lh-tight);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
 }
 
 .btn-toggle-pois {
@@ -1415,7 +1581,7 @@ html, body {
     border: 1.5px solid var(--c-primary-border);
     border-radius: var(--radius-md);
     font-size: var(--font-sm);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     cursor: pointer;
     margin-bottom: var(--sp-2);
     transition: all 0.15s;
@@ -1460,9 +1626,9 @@ html, body {
 
 .station-jobs-header {
     font-size: var(--font-xs);
-    font-weight: 700;
+    font-weight: var(--fw-bold);
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: var(--ls-wider);
     color: var(--c-text-muted);
     margin-bottom: var(--sp-2);
     display: flex;
@@ -1505,34 +1671,6 @@ html, body {
     transition: width 0.4s ease;
 }
 
-/* Scenario ΔH row */
-#scenario-h-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 3px;
-    border-top: 1px dashed var(--c-border);
-    margin-top: 6px;
-    padding-top: 8px;
-    border-bottom: none;
-}
-
-#scenario-h-row .stat-label {
-    font-size: var(--font-xs);
-    cursor: help;
-    text-decoration: underline dotted var(--c-text-muted);
-    text-transform: none;
-    letter-spacing: normal;
-    font-weight: 600;
-}
-
-#scenario-delta-h {
-    font-size: var(--font-sm);
-    font-weight: 600;
-    word-break: break-word;
-    line-height: 1.4;
-    color: var(--c-text-secondary);
-}
-
 /* ==================== GTFS Import Button ==================== */
 .btn-import-gtfs {
     background: #0891b2;
@@ -1541,7 +1679,7 @@ html, body {
     border-radius: var(--radius-sm);
     padding: 6px 12px;
     font-size: var(--font-xs);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     cursor: pointer;
     transition: background 0.2s;
     white-space: nowrap;
@@ -1558,7 +1696,7 @@ html, body {
     border-radius: var(--radius-sm);
     padding: 6px 12px;
     font-size: var(--font-xs);
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     cursor: pointer;
     transition: background 0.2s;
     white-space: nowrap;
@@ -1569,11 +1707,11 @@ html, body {
 
 /* ==================== Isochrone Overlap Badges ==================== */
 .overlap-badge {
-    font-size: 11px;
+    font-size: var(--font-xs);
     padding: 5px 8px;
     border-radius: var(--radius-sm);
     margin-top: 6px;
-    line-height: 1.4;
+    line-height: var(--lh-snug);
     border-left: 3px solid transparent;
 }
 .overlap-badge.warning {
@@ -1596,17 +1734,17 @@ html, body {
 }
 
 .uncov-description {
-    font-size: 11px;
-    color: var(--c-text-muted, #a0aec0);
-    line-height: 1.55;
+    font-size: var(--font-xs);
+    color: var(--c-text-muted);
+    line-height: var(--lh-normal);
     margin-bottom: 10px;
 }
 
 .uncov-summary {
-    font-size: 11px;
+    font-size: var(--font-xs);
     color: var(--c-text-secondary);
     margin-bottom: 8px;
-    line-height: 1.5;
+    line-height: var(--lh-snug);
 }
 
 .uncov-list-item {
@@ -1619,7 +1757,7 @@ html, body {
     margin-bottom: 6px;
     cursor: pointer;
     transition: background 0.12s, border-color 0.12s;
-    font-size: 12px;
+    font-size: var(--font-sm);
     user-select: none;
 }
 
@@ -1634,12 +1772,14 @@ html, body {
 }
 
 .uncov-rank {
-    font-weight: 700;
-    color: var(--c-text-muted, #a0aec0);
+    font-weight: var(--fw-bold);
+    color: var(--c-text-muted);
     min-width: 16px;
-    font-size: 11px;
+    font-size: var(--font-xs);
     flex-shrink: 0;
     text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
 }
 
 .uncov-id {
@@ -1648,21 +1788,25 @@ html, body {
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--c-text-secondary);
-    font-size: 11px;
-    font-family: var(--font-mono, monospace);
+    font-size: var(--font-xs);
+    font-family: var(--font-mono);
 }
 
 .uncov-area {
-    color: var(--c-text-muted, #a0aec0);
-    font-size: 11px;
+    color: var(--c-text-muted);
+    font-size: var(--font-xs);
     flex-shrink: 0;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
 }
 
 .uncov-pop {
-    font-weight: 600;
+    font-weight: var(--fw-semibold);
     color: var(--c-text-primary);
     flex-shrink: 0;
-    font-size: 12px;
+    font-size: var(--font-sm);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
 }
 /* ============================================================
    Toast notifications
@@ -1684,8 +1828,8 @@ html, body {
     max-width: 360px;
     padding: 10px 14px;
     border-radius: var(--radius-md, 6px);
-    font-size: 13px;
-    font-weight: 500;
+    font-size: var(--font-base);
+    font-weight: var(--fw-medium);
     color: #fff;
     background: var(--c-text-primary, #2d3748);
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
