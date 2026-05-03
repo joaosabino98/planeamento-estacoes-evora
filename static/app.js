@@ -360,6 +360,7 @@ function toggleGroupVisibility(groupId) {
     group.visible = !group.visible;
     renderGroups();
     updateMap();
+    refreshAugmentedIsochrones();
 }
 
 function getGroupForStation(station) {
