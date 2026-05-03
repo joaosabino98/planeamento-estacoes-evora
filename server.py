@@ -506,6 +506,137 @@ def create_fallback_isochrones(lat, lng, ranges):
     
     return jsonify({"isochrones": isochrones})
 
+
+# Velocidade pedonal de referência usada para a heurística "preenche polígono".
+# Coerente com RADIUS_5MIN_M/RADIUS_10MIN_M (5 km/h ≈ 83.4 m/min).
+WALK_SPEED_M_PER_MIN = RADIUS_5MIN_M / 5.0  # 83.4 m/min
+
+# CRS métrico local usado para os cálculos do augment. UTM 29N é adequado
+# para Portugal continental e evita o factor de escala de Web Mercator
+# (~1.28× a 38.5°N), garantindo que distâncias correspondem a metros reais.
+AUGMENT_METRIC_CRS = "EPSG:32629"
+
+
+def _fill_polygon_for_station(station_metric, buffer_metric, urb_metric,
+                              time_budget_min, speed_m_per_min=WALK_SPEED_M_PER_MIN):
+    """Heurística "preenche o polígono" para uma urbanização nova.
+
+    Pressuposto: dentro do polígono ``urb_metric`` há malha viária contínua,
+    portanto qualquer ponto interior é alcançável desde a fronteira a pé
+    em linha reta euclidiana. Quando a isócrona ORS de uma estação atinge a
+    fronteira da urb, o tempo restante permite percorrer ``reach`` metros
+    dentro do polígono.
+
+    Algoritmo (tudo em CRS métrico, EPSG:3857):
+      1. Se a estação está dentro da urb: ``filled = urb ∩ buffer(station, T·v)``.
+      2. Caso contrário, ``entry = boundary(urb) ∩ buffer_metric``.
+      3. ``t_entry = dist(station, entry) / v``  (tempo até primeira fronteira atingida).
+      4. ``reach = (T − t_entry) · v``.
+      5. ``filled = urb ∩ buffer(entry, reach)``.
+
+    Devolve geometria Shapely (vazia quando a urb não é tocada por esta
+    estação no orçamento ``time_budget_min``).
+    """
+    if urb_metric.is_empty or buffer_metric.is_empty:
+        return Polygon()
+
+    # Estação dentro da urb: usa todo o orçamento de tempo a partir da estação
+    if station_metric.within(urb_metric):
+        reach = time_budget_min * speed_m_per_min
+        return urb_metric.intersection(station_metric.buffer(reach))
+
+    boundary = urb_metric.boundary
+    entry = boundary.intersection(buffer_metric)
+    if entry.is_empty:
+        return Polygon()
+
+    d_entry = station_metric.distance(entry)
+    t_entry = d_entry / speed_m_per_min
+    t_rest = time_budget_min - t_entry
+    if t_rest <= 0:
+        return Polygon()
+
+    reach = t_rest * speed_m_per_min
+    return urb_metric.intersection(entry.buffer(reach))
+
+
+def _augment_buffers_with_urbanizations(point_info, all_5min_buffers, all_10min_buffers,
+                                        new_urbanization_features, census_crs):
+    """Aplica a heurística "preenche o polígono" a todas as urbanizações.
+
+    Mutates ``point_info`` in-place (substituindo ``buffer_5min``/``buffer_10min``)
+    e devolve listas de buffers atualizadas para reconstrução das uniões.
+    Falha silenciosa em caso de erro: as urbanizações apenas não estendem
+    a catchment, mas a chamada de população continua a funcionar.
+    """
+    if not new_urbanization_features or not point_info:
+        return all_5min_buffers, all_10min_buffers
+
+    try:
+        urb_geoms_wgs = []
+        for urb_f in new_urbanization_features:
+            try:
+                g = shape(urb_f['geometry'])
+                if not g.is_empty and g.area > 0:
+                    urb_geoms_wgs.append(g)
+            except Exception:
+                pass
+        if not urb_geoms_wgs:
+            return all_5min_buffers, all_10min_buffers
+
+        urb_metric_geoms = list(
+            gpd.GeoDataFrame(geometry=urb_geoms_wgs, crs="EPSG:4326")
+              .to_crs(AUGMENT_METRIC_CRS).geometry
+        )
+
+        buf5_metric = list(
+            gpd.GeoDataFrame(geometry=[pi['buffer_5min'] for pi in point_info], crs=census_crs)
+              .to_crs(AUGMENT_METRIC_CRS).geometry
+        )
+        buf10_metric = list(
+            gpd.GeoDataFrame(geometry=[pi['buffer_10min'] for pi in point_info], crs=census_crs)
+              .to_crs(AUGMENT_METRIC_CRS).geometry
+        )
+        station_pts_metric = list(
+            gpd.GeoDataFrame(
+                geometry=[Point(pi['lng'], pi['lat']) for pi in point_info],
+                crs="EPSG:4326"
+            ).to_crs(AUGMENT_METRIC_CRS).geometry
+        )
+
+        new_buf5_metric = []
+        new_buf10_metric = []
+        for idx, pi in enumerate(point_info):
+            aug5 = buf5_metric[idx]
+            aug10 = buf10_metric[idx]
+            for urb_m in urb_metric_geoms:
+                f5 = _fill_polygon_for_station(station_pts_metric[idx], buf5_metric[idx], urb_m, 5.0)
+                f10 = _fill_polygon_for_station(station_pts_metric[idx], buf10_metric[idx], urb_m, 10.0)
+                if not f5.is_empty:
+                    aug5 = aug5.union(f5)
+                if not f10.is_empty:
+                    aug10 = aug10.union(f10)
+            new_buf5_metric.append(aug5)
+            new_buf10_metric.append(aug10)
+
+        back5 = list(
+            gpd.GeoDataFrame(geometry=new_buf5_metric, crs=AUGMENT_METRIC_CRS)
+              .to_crs(census_crs).geometry
+        )
+        back10 = list(
+            gpd.GeoDataFrame(geometry=new_buf10_metric, crs=AUGMENT_METRIC_CRS)
+              .to_crs(census_crs).geometry
+        )
+        for i, pi in enumerate(point_info):
+            pi['buffer_5min'] = back5[i]
+            pi['buffer_10min'] = back10[i]
+
+        return [pi['buffer_5min'] for pi in point_info], [pi['buffer_10min'] for pi in point_info]
+    except Exception as e:
+        print(f"Aviso: falha no augment 'preenche polígono': {e}")
+        return all_5min_buffers, all_10min_buffers
+
+
 def _assign_population_voronoi(census_subset, point_info, point_populations,
                                get_pop, slot, get_intersection):
     """Atribui população BGRI→pontos resolvendo sobreposições por proximidade.
@@ -677,6 +808,14 @@ def calculate_population():
         all_5min_buffers.append(buffer_5min)
         all_10min_buffers.append(buffer_10min)
     
+    # Heurística "preenche o polígono": estende as catchments das estações
+    # dentro de novas urbanizações (assume malha viária interna contínua).
+    # Tem de ser feito antes das uniões e da atribuição de população.
+    all_5min_buffers, all_10min_buffers = _augment_buffers_with_urbanizations(
+        point_info, all_5min_buffers, all_10min_buffers,
+        new_urbanization_features, CENSUS_DATA.crs,
+    )
+
     # Calcular população evitando duplicações
     results = []
     total_pop_5min = 0

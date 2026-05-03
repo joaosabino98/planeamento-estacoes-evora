@@ -157,7 +157,8 @@ def test_urbanization_outside_isochrones_not_counted(client):
     """Regressão (v2.x): urbanização totalmente fora das isócronas não pode
     contribuir para os totais. O código antigo atribuía sempre tudo à
     estação mais próxima do centróide, mesmo a 10 km. Agora, com recorte
-    pelas isócronas reais, a contribuição é zero quando não há interseção.
+    pelas isócronas reais, a contribuição é zero quando não há interseção
+    e a heurística "preenche polígono" também não a alcança.
     """
     point = {"id": 1, "lat": 38.5667, "lng": -7.9075, "group_id": "g1"}
     base = _post(client, {"points": [point]})
@@ -236,6 +237,84 @@ def test_urbanization_deducts_existing_bgri_population(client, server_module):
     # depende da densidade real do BGRI escolhido, mas tem de haver dedução
     # quando a urb se sobrepõe a uma BGRI com ≥ 200 hab.
     assert delta < 1000
+
+
+def test_fill_polygon_extends_catchment_into_adjacent_urb(client):
+    """Heurística "preenche polígono": uma urbanização adjacente à isócrona
+    deve receber atribuição de população, mesmo quando o seu centróide está
+    fora do buffer ORS original (assumimos arruamentos internos contínuos).
+
+    Configuração: estação no centro de Évora; urb pequena (~80 m de lado)
+    colocada a ~350 m a sul — o suficiente para o seu *bordo norte* tocar
+    o buffer fallback de 5 min (417 m) mas o *centróide* ficar fora dele.
+    Sem o augment, a contribuição seria zero ou negligenciável; com o
+    augment, a urb inteira é alcançável (T·v restante > 80 m).
+    """
+    point = {"id": 1, "lat": 38.5667, "lng": -7.9075, "group_id": "g1"}
+    base = _post(client, {"points": [point]})
+
+    # Urb ~80 m de lado, centro ~280 m a sul da estação.
+    # A 38.5° de latitude, 1° lat ≈ 111 km, então 280 m ≈ 0.00252°.
+    # Bordo norte da urb fica a ~240 m da estação (dentro do buffer 5 min
+    # fallback ≈ 326 m em terreno) e o centróide fica fora do buffer
+    # quando o reach é insuficiente. Com o augment, a urb é preenchida.
+    cx, cy = -7.9075, 38.5667 - 0.00252
+    side = 0.00036  # ~40 m metade de lado
+    urb = {
+        "type": "Feature",
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [cx - side, cy - side],
+                [cx + side, cy - side],
+                [cx + side, cy + side],
+                [cx - side, cy + side],
+                [cx - side, cy - side],
+            ]],
+        },
+        "properties": {"estimated_pop": 800, "name": "adj"},
+    }
+    with_urb = _post(client, {
+        "points": [point],
+        "new_urbanization_features": [urb],
+    })
+    delta = with_urb["total_population_5min"] - base["total_population_5min"]
+    # Com augment, uma fração substancial dos 800 hab tem de aparecer.
+    # Sem augment (apenas recorte estrito), a urb mal toca o buffer e o
+    # delta seria muito inferior.
+    assert delta >= 400
+
+
+def test_fill_polygon_does_not_leak_outside_urb(client):
+    """O augment só deve estender a catchment dentro do polígono da urb.
+    Verificamos que sem urb a população base não é afetada quando o
+    pipeline corre na presença de urbs distantes.
+    """
+    point = {"id": 1, "lat": 38.5667, "lng": -7.9075, "group_id": "g1"}
+    base = _post(client, {"points": [point]})
+    # Urb a 5 km a sul — completamente fora do buffer 10 min
+    far_urb = {
+        "type": "Feature",
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[
+                [-7.9080, 38.5200],
+                [-7.9075, 38.5200],
+                [-7.9075, 38.5205],
+                [-7.9080, 38.5205],
+                [-7.9080, 38.5200],
+            ]],
+        },
+        "properties": {"estimated_pop": 5000, "name": "longe"},
+    }
+    with_urb = _post(client, {
+        "points": [point],
+        "new_urbanization_features": [far_urb],
+    })
+    # Não pode haver "vazamento" da população: a base tem de ficar
+    # essencialmente igual (urb fora de qualquer buffer → fill vazio).
+    assert abs(with_urb["total_population_5min"] - base["total_population_5min"]) < 50
+    assert abs(with_urb["total_population_10min"] - base["total_population_10min"]) < 50
 
 
 def test_per_station_5min_voronoi_distributed_not_collapsed(client):

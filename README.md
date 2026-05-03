@@ -34,6 +34,8 @@ Ferramenta web interativa para avaliar a cobertura pedonal de redes de transport
 - Aplicar **overrides de densidade** por subsecção; reverter para valores originais dos censos
 - **Novas urbanizações**: desenhar um polígono no mapa, definir tipo de densidade e cobertura do solo, obter estimativa de população instantânea; nome editável inline
 - A população das urbanizações é **recortada pelas isócronas reais** (5 min e anel 10 min) — só conta o que cai dentro de uma catchment; o que sobra fora não é atribuído a ninguém
+- Heurística "preenche o polígono": dentro da urbanização assume-se malha viária contínua, portanto o tempo restante a partir do momento em que a isócrona toca a fronteira da urb permite percorrer o seu interior
+- Overlay visual da extensão (linhas tracejadas): a parte da catchment adicionada pela heurística aparece sobreposta ao mapa para que a visualização e os números coincidam. Pode ser desligada no toggle "Mostrar extensão dentro de urbanizações".
 - As novas urbanizações **descontam** a população BGRI já existente na zona sobreposta (sem dupla contagem)
 - Resumo do cenário: população base (censos) vs. projetada vs. delta
 - Recalcular catchment com as alterações do cenário ativas

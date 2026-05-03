@@ -73,6 +73,7 @@ The list below covers only decisions **without automated coverage** (frontend, C
 8. **Server runs with `debug=False` by default** — gated by `FLASK_DEBUG=1`. Do not reintroduce an unconditional `app.run(debug=True)` (it exposes the Werkzeug debugger).
 9. **`toast(msg, type)` for non-blocking notifications** — `alert(...)` is reserved for hard errors. Prefer toast for confirmations, GTFS results, recalc done, etc.
 10. **Globals/per-station population** — per-station uses Voronoi/proximity to the centroid; globals and per-group use union. Aggregated totals (coverage card, report, `groups[]`) **never** sum `population_5min + population_10min` per station. *(The backend side is covered by `tests/test_population.py`; the per-station calculation in the frontend — e.g. individual cards — is not, hence it stays listed.)*
+11. **"Preenche polígono" speed constant has to match in both ends** — `WALK_SPEED_M_PER_MIN` no servidor (`server.py`) e `WALK_SPEED_KM_PER_MIN` no cliente (`static/app.js`) representam a mesma velocidade pedonal (5 km/h ≈ 83.4 m/min, derivada de `RADIUS_5MIN_M / 5`). Mexer numa sem mexer na outra introduz diferenças visíveis entre o que o utilizador vê no mapa e os números mostrados nos cartões.
 
 ## Keep these instructions accurate
 

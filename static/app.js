@@ -48,6 +48,8 @@ let stations = [];
 let stationMarkers = [];
 let isochroneLayers = [];
 let stationIsochroneLayers = {};
+let augmentedIsochroneLayers = {}; // { stationId: [layer5, layer10] } — overlay "preenche polígono" para urbs
+let showAugmentedOverlay = true;   // sincronizado com o toggle no painel "Cenário Urbano"
 let isUpdating = false;
 
 // -- Active tab --
@@ -212,6 +214,15 @@ function initMap() {
     document.getElementById('btn-cancel-urbanization').addEventListener('click', cancelUrbanization);
     document.getElementById('urb-coverage').addEventListener('input', updateUrbanizationEstimate);
     document.getElementById('urb-density-type').addEventListener('change', updateUrbanizationEstimate);
+
+    // Toggle do overlay "preenche polígono"
+    const augToggle = document.getElementById('toggle-augmented-overlay');
+    if (augToggle) {
+        augToggle.addEventListener('change', (e) => {
+            showAugmentedOverlay = !!e.target.checked;
+            refreshAugmentedIsochrones();
+        });
+    }
 
 
     // Populate density selects
@@ -871,6 +882,121 @@ function removeStationIsochrones(stationId) {
 }
 
 // ============================================================
+//      "PREENCHE POLÍGONO" OVERLAY (espelha o server-side)
+// ============================================================
+// Mantém-se sincronizado com server.py::_fill_polygon_for_station.
+// Velocidade pedonal coerente com RADIUS_5MIN_M = 417 m (5 km/h ≈ 83.4 m/min).
+const WALK_SPEED_KM_PER_MIN = 0.0834;
+
+/**
+ * Heurística "preenche o polígono" — versão JS para visualização.
+ * Devolve um turf Feature<Polygon> com a porção da urb alcançável dentro
+ * de `T_min` minutos pela estação, ou null se não for atingida.
+ *
+ * Algoritmo (turf, em km):
+ *   - Estação dentro da urb: fill = urb ∩ buffer(estação, T·v)
+ *   - Caso contrário: ponto mais próximo da fronteira da urb a partir da
+ *     estação. Se cair dentro da isócrona ORS, esse é o ponto de entrada;
+ *     reach = (T - d_entry/v) · v; fill = urb ∩ buffer(entry, reach).
+ */
+function fillPolygonForStation(stationLngLat, isoFeature, urbFeature, T_min) {
+    if (!urbFeature || !urbFeature.geometry) return null;
+    try {
+        const stationPt = turf.point(stationLngLat);
+        // Estação dentro do polígono da urb
+        if (turf.booleanPointInPolygon(stationPt, urbFeature)) {
+            const reachKm = T_min * WALK_SPEED_KM_PER_MIN;
+            const reachBuf = turf.buffer(stationPt, reachKm, { units: 'kilometers' });
+            return turf.intersect(urbFeature, reachBuf);
+        }
+        if (!isoFeature || !isoFeature.geometry) return null;
+        // Ponto da fronteira da urb mais próximo da estação
+        const urbBoundary = turf.polygonToLine(urbFeature);
+        // polygonToLine devolve LineString para Polygon, MultiLineString para
+        // MultiPolygon — ambos aceites por nearestPointOnLine
+        const nearestPt = turf.nearestPointOnLine(urbBoundary, stationPt, { units: 'kilometers' });
+        // Se o ponto mais próximo não está dentro da isócrona, a urb não é alcançada
+        if (!turf.booleanPointInPolygon(nearestPt, isoFeature)) return null;
+        const dEntryKm = nearestPt.properties.dist; // km
+        const tEntry = dEntryKm / WALK_SPEED_KM_PER_MIN;
+        const tRest = T_min - tEntry;
+        if (tRest <= 0) return null;
+        const reachKm = tRest * WALK_SPEED_KM_PER_MIN;
+        const reachBuf = turf.buffer(nearestPt, reachKm, { units: 'kilometers' });
+        return turf.intersect(urbFeature, reachBuf);
+    } catch (e) {
+        console.warn('fillPolygonForStation:', e);
+        return null;
+    }
+}
+
+function clearAugmentedOverlay() {
+    Object.values(augmentedIsochroneLayers).forEach(arr => {
+        arr.forEach(l => { try { if (map.hasLayer(l)) map.removeLayer(l); } catch {} });
+    });
+    augmentedIsochroneLayers = {};
+}
+
+/**
+ * Recalcula e re-renderiza o overlay "preenche polígono" para todas as
+ * estações com isócronas válidas. Chama-se sempre que urbs ou isócronas
+ * mudam. Sem urbs ou com toggle desligado, apenas limpa.
+ */
+function refreshAugmentedIsochrones() {
+    clearAugmentedOverlay();
+    if (!showAugmentedOverlay || newUrbanizations.length === 0) return;
+
+    const urbFeatures = newUrbanizations.map(u =>
+        ({ type: 'Feature', geometry: u.geometry, properties: { id: u.id } })
+    );
+
+    stations.forEach(station => {
+        if (!hasValidCache(station)) return;
+        const group = getGroupForStation(station);
+        if (!group || !group.visible) return;
+        const color = group.color;
+        const stationLngLat = [station.lng, station.lat];
+        const iso5 = station.isochrones[0];
+        const iso10 = station.isochrones[1];
+
+        let union5 = null, union10 = null;
+        urbFeatures.forEach(urb => {
+            const f5 = fillPolygonForStation(stationLngLat, iso5, urb, 5.0);
+            const f10 = fillPolygonForStation(stationLngLat, iso10, urb, 10.0);
+            try { if (f5) union5 = union5 ? turf.union(union5, f5) : f5; } catch (e) { console.warn(e); }
+            try { if (f10) union10 = union10 ? turf.union(union10, f10) : f10; } catch (e) { console.warn(e); }
+        });
+
+        // Subtrair a isócrona ORS para mostrar apenas a *extensão* (parte
+        // adicionada pela heurística que ainda não estava coberta).
+        let extra5 = null, extra10 = null;
+        try { extra5 = union5 && iso5 ? turf.difference(union5, iso5) : union5; } catch { extra5 = union5; }
+        try {
+            // O anel 10 min não deve sobrepor o overlay de 5 min
+            let base10 = union10;
+            if (base10 && iso10) { try { base10 = turf.difference(base10, iso10); } catch {} }
+            if (base10 && union5) { try { base10 = turf.difference(base10, union5); } catch {} }
+            extra10 = base10;
+        } catch { extra10 = union10; }
+
+        const layers = [];
+        if (extra5) {
+            const l = L.geoJSON(extra5, {
+                style: { color, fillColor: color, fillOpacity: 0.18, weight: 1.5, opacity: 0.9, dashArray: '4,3' }
+            }).addTo(map);
+            layers.push(l);
+        }
+        if (extra10) {
+            const l = L.geoJSON(extra10, {
+                style: { color, fillColor: color, fillOpacity: 0.10, weight: 1.5, opacity: 0.7, dashArray: '4,3' }
+            }).addTo(map);
+            layers.push(l);
+        }
+        if (layers.length > 0) augmentedIsochroneLayers[station.id] = layers;
+    });
+}
+
+// ============================================================
 //                  POPULATION CALCULATION
 // ============================================================
 async function calculatePopulation(triggerJobs = true) {
@@ -924,6 +1050,9 @@ async function calculatePopulation(triggerJobs = true) {
         updateSidebarStats(data);
         updateSidebar();
         renderUncoveredBgris();
+        // Atualizar overlay "preenche polígono" — depende de stations[i].isochrones
+        // estar populado, o que só acontece após os pontos terem isócronas.
+        refreshAugmentedIsochrones();
 
         // Calculate jobs after population is known (non-blocking, unless suppressed)
         if (triggerJobs) calculateJobs();
@@ -1657,6 +1786,7 @@ function confirmUrbanization() {
     isDrawingUrbanization = false;
     document.getElementById('urbanization-modal').classList.add('hidden');
     renderUrbanizations();
+    refreshAugmentedIsochrones();
     updateScenarioSummary();
 }
 
@@ -1674,6 +1804,7 @@ function removeUrbanization(urbId) {
     urb.layers.forEach(l => { try { map.removeLayer(l); } catch {} });
     newUrbanizations.splice(idx, 1);
     renderUrbanizations();
+    refreshAugmentedIsochrones();
     updateScenarioSummary();
 }
 

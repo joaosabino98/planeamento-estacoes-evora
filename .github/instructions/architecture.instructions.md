@@ -53,16 +53,20 @@ Response (extra fields beyond per-point totals):
 **Algorithm (`server.py::calculate_population`):**
 1. Reproject census to ORS CRS (EPSG:4326).
 2. Apply `density_overrides` per BGRI (replaces `N_INDIVIDUOS`).
-3. Per-station population uses **proximity to centroid** to deduplicate overlapping isochrones (Voronoi-like). Implemented in `_assign_population_voronoi(census_subset, point_info, point_populations, get_pop, slot, get_intersection)` — called once for the 5-min ring (`get_intersection = row ∩ buffer_5min`) and once for the secondary 10-min ring (`row ∩ buffer_10min − row ∩ buffer_5min`).
-4. Global totals (`total_population_*`) use `union_5min` / `union_10min` to avoid any double-counting.
-5. **Urbanisation attribution** — for each `new_urbanization_features` polygon:
+3. **"Fill polygon" augment** — for each `new_urbanization_features` polygon, extend each station's `buffer_5min`/`buffer_10min` *inside* the urbanisation, assuming continuous internal road grid. Implemented in `_augment_buffers_with_urbanizations` + `_fill_polygon_for_station` (CRS `EPSG:32629`/UTM 29N, `WALK_SPEED_M_PER_MIN = 83.4`):
+   1. If station is inside `urb`: `filled = urb ∩ buffer(station, T·v)`.
+   2. Else: `entry = boundary(urb) ∩ buffer_metric`; `t_entry = dist(station, entry) / v`; `t_rest = T − t_entry`; if `t_rest > 0`, `filled = urb ∩ buffer(entry, t_rest·v)`.
+   3. Augmented buffer: `buffer_T' = buffer_T ∪ filled` (clipped to the urb so it never leaks outside). Runs **before** unions and population assignment so BGRIs and urbs alike benefit.
+4. Per-station population uses **proximity to centroid** to deduplicate overlapping isochrones (Voronoi-like). Implemented in `_assign_population_voronoi(census_subset, point_info, point_populations, get_pop, slot, get_intersection)` — called once for the 5-min ring (`get_intersection = row ∩ buffer_5min`) and once for the secondary 10-min ring (`row ∩ buffer_10min − row ∩ buffer_5min`).
+5. Global totals (`total_population_*`) use `union_5min` / `union_10min` to avoid any double-counting.
+6. **Urbanisation attribution** — for each `new_urbanization_features` polygon:
    1. Compute `bgri_overlap_pop = Σ pop(bgri) × area(bgri ∩ urb) / area(bgri)` (respecting `density_overrides`).
    2. `net_pop = max(0, estimated_pop − bgri_overlap_pop)` and `d_urb = net_pop / area(urb)` (uniform density, in CENSUS CRS).
-   3. Per-station: clip `urb` by `buffer_5min` and by the station's 10-min ring; resolve overlaps between stations via centroid-distance Voronoi; add `d_urb × area_unique` to `point_populations[id][slot]`.
+   3. Per-station: clip `urb` by the augmented `buffer_5min` and by the station's 10-min ring; resolve overlaps between stations via centroid-distance Voronoi; add `d_urb × area_unique` to `point_populations[id][slot]`.
    4. Global: add `d_urb × area(urb ∩ union_5min)` to `total_pop_5min` and `d_urb × area(urb ∩ secondary_zone)` to `total_pop_10min`. Urbanisations entirely outside any isochrone contribute zero.
    5. Per-group: same intersection done against `gu5` / `gu10` of each group (so a single urb can split between groups proportionally to area).
-6. Per-group totals (`groups[]`) use the same union method scoped to each group's stations — the `5+10` sum is ≤ the real population covered by the group, and with a single group it matches the global total exactly.
-7. `uncovered_bgris`: BGRIs with no intersection with `union_10min` AND `N_INDIVIDUOS ≥ 50`, sorted desc, top 30.
+7. Per-group totals (`groups[]`) use the same union method scoped to each group's stations — the `5+10` sum is ≤ the real population covered by the group, and with a single group it matches the global total exactly.
+8. `uncovered_bgris`: BGRIs with no intersection with `union_10min` AND `N_INDIVIDUOS ≥ 50`, sorted desc, top 30.
 
 **Census fields:**
 - Population: `N_INDIVIDUOS` (resolved at startup into `POP_COLUMN`)
@@ -164,6 +168,9 @@ stations[]                // [{ id, lat, lng, groupId, name (GTFS|null),
                           //    isochroneError, creatingIsochrones,
                           //    population_5min, population_10min, population_total }]
 stationMarkers[]; isochroneLayers[]; stationIsochroneLayers{ [stationId]: [layer, layer] }
+augmentedIsochroneLayers{ [stationId]: [layer5, layer10] }   // overlay "preenche polígono"
+showAugmentedOverlay = true                                  // toggle no painel "Cenário Urbano"
+const WALK_SPEED_KM_PER_MIN = 0.0834                         // espelha server.WALK_SPEED_M_PER_MIN
 
 // City-wide & global stats
 const CITY_TOTAL_JOBS = 23674   // hardcoded CME Évora figure
@@ -207,6 +214,8 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `enqueueIsochrone(s)` / `runIsochroneQueue()` | Serialises ORS calls (350 ms gap), then runs `calculatePopulation(false)` → `calculateJobs()` → hide overlay (or show error) |
 | `createIsochrones(s, force)` | Fetches via `/api/isochrones`; falls back to circle; returns `true` if served from disk cache |
 | `drawCachedIsochrones(s, color)` | Draws from `s.isochrones` without fetching |
+| `fillPolygonForStation(stationLngLat, isoFeature, urbFeature, T_min)` | Espelha (turf v6, em km) a função `_fill_polygon_for_station` do servidor. Devolve `Feature<Polygon>` ou `null`. |
+| `refreshAugmentedIsochrones()` | Limpa e re-renderiza o overlay "preenche polígono" (camadas tracejadas). Chamado em `confirmUrbanization`, `removeUrbanization`, `calculatePopulation` (após o backend responder) e quando o toggle muda. Subtrai a isócrona ORS para mostrar só a *extensão* adicionada. |
 | `calculatePopulation(triggerJobs=true)` | POSTs to backend; updates `globalPopStats`; calls `renderUncoveredBgris()`; with `triggerJobs=false` skips automatic jobs run (queue runner uses this) |
 | `calculateJobs()` | POSTs to backend; populates `jobsData`; calls `updateJobsSummary()`, `updateSidebar()`, `computeOverlaps()`, `updateScenarioSummary()` if on scenario tab. Returns `true`/`false`. |
 | `updateJobsSummary()` / `updateCoverageCard()` | Updates `#total-jobs`, `#avg-shannon-h`, coverage bars; **dedupes POIs by `osm_id`** |
@@ -342,6 +351,9 @@ These rules have dedicated asserts — just run `pytest -q` to verify. If one fa
 | Urbanisation enters nearest group's 5 min | `tests/test_population.py::test_urbanization_adds_population_to_5min` | Urbanisation pop → 5 min of overlapping station(s), distributed by area of `urb ∩ buffer_5min`. |
 | Urbanisation outside isochrones contributes 0 | `tests/test_population.py::test_urbanization_outside_isochrones_not_counted` | Urb fully outside `union_10min` adds nothing — no centroid-based fallback. |
 | Urbanisation deducts overlapping BGRI | `tests/test_population.py::test_urbanization_deducts_existing_bgri_population` | `net_pop = max(0, estimated_pop − Σ pop(bgri) × overlap_ratio)` (avoids double counting). |
+| Fill-polygon heuristic helper | `tests/test_fill_polygon.py` | Pure unit tests for `_fill_polygon_for_station` covering: empty when not touched, full fill for small urbs, partial fill for long urbs, station inside urb, t_rest=0 edge, 10 min > 5 min. |
+| Fill-polygon extends adjacent urb | `tests/test_population.py::test_fill_polygon_extends_catchment_into_adjacent_urb` | An urb adjacent to (but mostly outside) the buffer still receives substantial pop attribution thanks to the augment. |
+| Fill-polygon does not leak | `tests/test_population.py::test_fill_polygon_does_not_leak_outside_urb` | A far urb with augment enabled doesn't perturb the base population (fill is empty when entry is empty). |
 | Shannon H with `residents=0` | `tests/test_shannon.py::test_residents_zero_with_jobs_classifies_as_employment_node` | `compute_shannon_h(0, jobs>0)` → ratio=1.0; `self_sufficiency=1.0` (not 0). |
 | `self_sufficiency=1.0` when `residents=0` | `tests/test_endpoints.py::test_jobs_endpoint_self_sufficiency_one_when_residents_zero` | Same, at the endpoint. |
 | Fallback never cached | `tests/test_endpoints.py::test_isochrones_fallback_is_not_cached` | Only real ORS results enter `data/isochrone_cache.json`. |

@@ -970,6 +970,22 @@ html, body {
     margin-bottom: 20px;
 }
 
+.augmented-toggle {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    margin: var(--sp-2) 0 var(--sp-3) 0;
+    font-size: var(--fs-xs);
+    color: var(--c-text-muted);
+    cursor: pointer;
+    user-select: none;
+}
+
+.augmented-toggle input[type="checkbox"] {
+    cursor: pointer;
+    margin: 0;
+}
+
 .urbanization-item {
     background: white;
     border: 1px solid #c6f6d5;
