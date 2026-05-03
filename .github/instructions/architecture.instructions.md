@@ -247,7 +247,7 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `deleteRouteTrunk(gid)` / `deleteRouteVariant(gid, vid)` / `removeGroupRouteLayers(gid)` | Apagam geometria e layers do mapa. |
 | `getRouteLengthM(g)` / `lineLengthM(geom)` / `formatRouteDistance(m)` | Comprimento operacional = `length(trunk) × 2 + Σ length(variants)` (turf 6, em km → m). Apenas visual; não entra em população nem empregos. |
 | `showStationsLoading(msg)` / `update…` / `showStationsLoadingError(msg)` / `hideStationsLoading()` | Stations-tab overlay; locks scroll; error state has retry button |
-| `captureMapToImage({bounds, width, height, stationMarkers, isochroneFeatures, labelledDots})` | Off-screen Leaflet map → `html2canvas`; never touches the live map |
+| `captureMapToImage({bounds, width, height, stationMarkers, isochroneFeatures, routeLines, labelledDots})` | Off-screen Leaflet map → `html2canvas`; never touches the live map. `routeLines: [{feature, color, kind:'trunk'\|'variant'}]` desenha trunk (sólido peso 4) e variantes (tracejado `6,5` peso 3) entre as isócronas e os pins. |
 | `exportReport()` | Captures overview + uncovered maps; builds HTML report with KPIs, scenario, per-group tables, uncovered section |
 
 ---

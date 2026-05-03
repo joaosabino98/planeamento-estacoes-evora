@@ -2769,10 +2769,11 @@ function toast(message, type = 'info', durationMs = 3500) {
  * @param {number}   opts.height                  - Container height in px
  * @param {Array}    [opts.stationMarkers=[]]      - [{lat,lng,color}]
  * @param {Array}    [opts.isochroneFeatures=[]]   - [{feature:GeoJSON, color}]
+ * @param {Array}    [opts.routeLines=[]]          - [{feature:GeoJSON LineString, color, kind:'trunk'|'variant'}]
  * @param {Array}    [opts.labelledDots=[]]        - [{lat,lng,label}] numbered dots
  * @returns {Promise<string|null>}  dataURL PNG or null on failure
  */
-async function captureMapToImage({ bounds, width, height, stationMarkers = [], isochroneFeatures = [], labelledDots = [] }) {
+async function captureMapToImage({ bounds, width, height, stationMarkers = [], isochroneFeatures = [], routeLines = [], labelledDots = [] }) {
     const container = document.createElement('div');
     container.style.cssText = `position:fixed;left:-9999px;top:-9999px;width:${width}px;height:${height}px;z-index:-1;overflow:hidden;`;
     document.body.appendChild(container);
@@ -2806,6 +2807,24 @@ async function captureMapToImage({ bounds, width, height, stationMarkers = [], i
                         opacity: 0.75,
                         fillColor: color || '#667eea',
                         fillOpacity: 0.13,
+                    },
+                }).addTo(offMap);
+            } catch (_) {}
+        });
+
+        // Routes (trunk + variants), drawn above isochrones and below station dots
+        routeLines.forEach(({ feature, color, kind }) => {
+            if (!feature) return;
+            try {
+                const isVariant = kind === 'variant';
+                L.geoJSON(feature, {
+                    style: {
+                        color: color || '#667eea',
+                        weight: isVariant ? 3 : 4,
+                        opacity: 0.9,
+                        dashArray: isVariant ? '6,5' : null,
+                        lineCap: 'round',
+                        lineJoin: 'round',
                     },
                 }).addTo(offMap);
             } catch (_) {}
@@ -2876,7 +2895,7 @@ async function exportReport() {
     btn.disabled = true;
 
     // ── 1. Capturar mapas em off-screen (sem perturbar o mapa activo) ─────
-    // Visão geral: marcas das estações + contorno das isócronas de 10 min
+    // Visão geral: marcas das estações + contorno das isócronas de 10 min + rotas dos grupos
     const overviewBounds = L.latLngBounds(stations.map(s => [s.lat, s.lng]));
     const overviewMarkers = stations.map(s => ({
         lat: s.lat, lng: s.lng,
@@ -2887,9 +2906,37 @@ async function exportReport() {
         if (!iso10) return [];
         return [{ feature: iso10, color: (getGroupForStation(s) || {}).color || '#667eea' }];
     });
+    // Rotas: tronco + variantes para cada grupo visível com geometria.
+    // Estende os bounds para incluir as rotas (caso passem por fora das paragens).
+    const overviewRoutes = [];
+    groups.forEach(g => {
+        if (g.visible === false) return;
+        const r = g.route;
+        if (!r) return;
+        const extendBounds = (geom) => {
+            if (!geom || !geom.coordinates) return;
+            geom.coordinates.forEach(([lng, lat]) => overviewBounds.extend([lat, lng]));
+        };
+        if (r.trunk) {
+            overviewRoutes.push({
+                feature: { type: 'Feature', geometry: r.trunk, properties: {} },
+                color: g.color, kind: 'trunk',
+            });
+            extendBounds(r.trunk);
+        }
+        (r.variants || []).forEach(v => {
+            if (!v.geometry) return;
+            overviewRoutes.push({
+                feature: { type: 'Feature', geometry: v.geometry, properties: {} },
+                color: g.color, kind: 'variant',
+            });
+            extendBounds(v.geometry);
+        });
+    });
     const mapImgSrc = await captureMapToImage({
         bounds: overviewBounds, width: 1120, height: 630,
         stationMarkers: overviewMarkers, isochroneFeatures: overviewIsochrones,
+        routeLines: overviewRoutes,
     });
 
     // Mapa de zonas sem cobertura (capturado aqui para manter a construção HTML síncrona)
