@@ -64,6 +64,8 @@ Most **backend** rules are already guarded by tests in `tests/` — just run `py
 The list below covers only decisions **without automated coverage** (frontend, CSS, infra, UI/product). See [`architecture.instructions.md`](./instructions/architecture.instructions.md) for full reasoning.
 
 1. **Census layer pane** — add the BGRI GeoJSON to `censusPane` (z-index 200), never to `overlayPane`. After adding, call `isochroneLayers.forEach(l => l.bringToFront())`.
+1.1. **Route pane** — desenhar percursos de grupo (`group.route.{trunk,variants}`) sempre em `routePane` (z-index 350). Não cair para `overlayPane` (esconder-se-iam atrás das isócronas) nem `markerPane` (cobririam os pins).
+1.2. **As rotas são apenas visuais** — `group.route` não entra em `calculatePopulation()`, `calculateJobs()` nem `computeOverlaps()`. As paragens não têm de tocar a geometria do percurso (o pin define o catchment; a rota descreve o trajeto). Comprimento operacional = `length(trunk) × 2 + Σ length(variants)`.
 2. **No floors slider** — urbanisation population is exactly `residents_ha × area_ha × (coverage / 100)`. Do not reintroduce a floors factor.
 3. **Edit panel is floating** (`position:fixed`), not inside the sidebar. Visibility is toggled via `opacity`/`transform`, not `display:none`. Closes on ESC, ✕, or empty-map click.
 4. **No CSV import/export** — the project is a single JSON file (`saveProject`/`loadProject`). Do not reintroduce CSV buttons.

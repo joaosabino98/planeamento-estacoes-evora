@@ -56,6 +56,16 @@ let augmentedIsochroneLayers = {}; // { stationId: [layer5, layer10] } — overl
 let showAugmentedOverlay = true;   // sincronizado com o toggle no painel "Cenário Urbano"
 let isUpdating = false;
 
+// -- Routes (percurso por grupo) --
+// Modelo: group.route = { trunk: LineString|null, variants: [{ id, direction: 'outbound'|'inbound', geometry: LineString }] }
+// O tronco representa o troço comum bidirecional; as variantes representam desvios
+// unidirecionais (rotundas, sentidos únicos, voltas nos terminus). Apenas visual —
+// não influencia isócronas, população ou empregos.
+let groupRouteLayers = {}; // { [groupId]: { trunkLayer, variantLayers: { [variantId]: layer } } }
+let routeDrawHandler = null; // handler ativo de L.Draw.Polyline durante desenho
+let isDrawingRoute = null;   // { groupId, kind: 'trunk'|'variant', direction? }
+let editingRoute = null;     // { groupId, kind, variantId?, layer }
+
 // -- Active tab --
 let activeTab = 'stations'; // 'stations' | 'scenario'
 
@@ -136,6 +146,12 @@ function initMap() {
     map.getPane('censusPane').style.zIndex = 200;
     map.getPane('censusPane').style.pointerEvents = 'auto';
 
+    // Custom pane for routes — sits above isochrones (z=400) but below markers (z=600),
+    // de modo que as rotas sejam claramente visíveis sem esconder os pins das paragens.
+    map.createPane('routePane');
+    map.getPane('routePane').style.zIndex = 350;
+    map.getPane('routePane').style.pointerEvents = 'auto';
+
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors',
         maxZoom: 19
@@ -147,6 +163,7 @@ function initMap() {
 
     // Map click — add station (only in stations tab, not drawing)
     map.on('click', function(e) {
+        if (isDrawingRoute) return; // Leaflet.Draw está a tratar do clique
         if (activeTab === 'stations' && !isUpdating) {
             addStation(e.latlng.lat, e.latlng.lng);
         } else if (activeTab === 'scenario') {
@@ -158,6 +175,11 @@ function initMap() {
     // Draw events
     map.on(L.Draw.Event.CREATED, function(event) {
         const layer = event.layer;
+        if (isDrawingRoute) {
+            const geom = layer.toGeoJSON().geometry;
+            finishRouteDrawing(geom);
+            return;
+        }
         if (isDrawingUrbanization) {
             pendingUrbanizationGeometry = layer.toGeoJSON().geometry;
             drawnItems.addLayer(layer);
@@ -197,7 +219,12 @@ function initMap() {
 
     // ESC closes the edit panel; Ctrl+Z/Y for undo/redo (único listener)
     document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') { cancelEdit(); return; }
+        if (e.key === 'Escape') {
+            if (isDrawingRoute) { cancelRouteDrawing(); return; }
+            if (editingRoute)   { finishRouteEdit(false); return; }
+            cancelEdit();
+            return;
+        }
         if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
         else if ((e.ctrlKey || e.metaKey) && e.key === 'z' && e.shiftKey) { e.preventDefault(); redo(); }
         else if ((e.ctrlKey || e.metaKey) && e.key === 'y') { e.preventDefault(); redo(); }
@@ -278,7 +305,7 @@ function createGroup(name, color) {
     if (!color) {
         color = GROUP_COLORS.find(c => !usedColors.includes(c)) || GROUP_COLORS[groups.length % GROUP_COLORS.length];
     }
-    const group = { id, name, color, visible: true };
+    const group = { id, name, color, visible: true, route: { trunk: null, variants: [] } };
     groups.push(group);
     activeGroupId = id;
     renderGroups();
@@ -341,6 +368,7 @@ function deleteGroup(groupId) {
     const removedIds = new Set(groupStations.map(s => s.id));
     isochroneQueue = isochroneQueue.filter(s => !removedIds.has(s && s.id));
     stations = stations.filter(s => s.groupId !== groupId);
+    removeGroupRouteLayers(groupId);
     groups = remaining;
     if (activeGroupId === groupId) activeGroupId = remaining.length > 0 ? remaining[0].id : null;
     renderGroups();
@@ -360,11 +388,270 @@ function toggleGroupVisibility(groupId) {
     group.visible = !group.visible;
     renderGroups();
     updateMap();
+    renderAllRoutes();
     refreshAugmentedIsochrones();
 }
 
 function getGroupForStation(station) {
     return groups.find(g => g.id === station.groupId) || groups[0];
+}
+
+// ============================================================
+//                        ROUTES
+// ============================================================
+// Rotas são puramente visuais/informativas. Cada grupo tem
+//   group.route = { trunk: LineString|null, variants: [{ id, direction, geometry }] }
+// O tronco representa o troço bidirecional comum; as variantes representam
+// pequenos desvios unidirecionais (rotundas, ruas de sentido único, voltas
+// nos terminus). Não influenciam isócronas, população nem empregos.
+
+function ensureRouteShape(group) {
+    if (!group.route) group.route = { trunk: null, variants: [] };
+    else {
+        if (!('trunk' in group.route)) group.route.trunk = null;
+        if (!Array.isArray(group.route.variants)) group.route.variants = [];
+    }
+    return group.route;
+}
+
+// Comprimento de uma LineString em metros (turf.length devolve km).
+function lineLengthM(lineGeometry) {
+    if (!lineGeometry || lineGeometry.type !== 'LineString' || !lineGeometry.coordinates || lineGeometry.coordinates.length < 2) return 0;
+    try {
+        return turf.length({ type: 'Feature', geometry: lineGeometry, properties: {} }, { units: 'kilometers' }) * 1000;
+    } catch { return 0; }
+}
+
+// Comprimento operacional de um percurso: tronco percorrido nos dois sentidos
+// (× 2) + variantes unidirecionais (× 1).
+function getRouteLengthM(group) {
+    const r = group && group.route;
+    if (!r) return { trunk: 0, variants: 0, operational: 0 };
+    const trunk = lineLengthM(r.trunk);
+    const variants = (r.variants || []).reduce((acc, v) => acc + lineLengthM(v.geometry), 0);
+    return { trunk, variants, operational: trunk * 2 + variants };
+}
+
+function formatRouteDistance(m) {
+    if (!m || m < 1) return '0 m';
+    if (m < 1000) return `${Math.round(m)} m`;
+    return `${(m / 1000).toFixed(m < 10000 ? 2 : 1)} km`;
+}
+
+// Rebuild map layers for all routes (call after group color/visibility changes
+// or after geometry edits).
+function renderAllRoutes() {
+    groups.forEach(g => renderGroupRoute(g));
+}
+
+function renderGroupRoute(group) {
+    if (!group) return;
+    ensureRouteShape(group);
+    const tracker = groupRouteLayers[group.id] || { trunkLayer: null, variantLayers: {} };
+    groupRouteLayers[group.id] = tracker;
+
+    const visible = group.visible !== false;
+
+    // -- Trunk --
+    if (tracker.trunkLayer) { try { map.removeLayer(tracker.trunkLayer); } catch {} tracker.trunkLayer = null; }
+    if (visible && group.route.trunk) {
+        const layer = L.geoJSON(
+            { type: 'Feature', geometry: group.route.trunk, properties: {} },
+            {
+                pane: 'routePane',
+                style: { color: group.color, weight: 5, opacity: 0.85, lineCap: 'round', lineJoin: 'round' }
+            }
+        ).addTo(map);
+        layer.bindTooltip(`${escapeHtml(group.name)} — tronco`, { sticky: true });
+        layer.on('mouseover', () => layer.setStyle({ weight: 7 }));
+        layer.on('mouseout',  () => layer.setStyle({ weight: 5 }));
+        tracker.trunkLayer = layer;
+    }
+
+    // -- Variants --
+    Object.keys(tracker.variantLayers).forEach(vid => {
+        try { map.removeLayer(tracker.variantLayers[vid]); } catch {}
+    });
+    tracker.variantLayers = {};
+    if (visible) {
+        (group.route.variants || []).forEach(v => {
+            if (!v.geometry) return;
+            const layer = L.geoJSON(
+                { type: 'Feature', geometry: v.geometry, properties: {} },
+                {
+                    pane: 'routePane',
+                    style: {
+                        color: group.color, weight: 4, opacity: 0.9,
+                        dashArray: '8,6', lineCap: 'round', lineJoin: 'round'
+                    }
+                }
+            ).addTo(map);
+            const dirLabel = v.direction === 'inbound' ? 'volta' : 'ida';
+            layer.bindTooltip(`${escapeHtml(group.name)} — variante (${dirLabel})`, { sticky: true });
+            layer.on('mouseover', () => layer.setStyle({ weight: 6 }));
+            layer.on('mouseout',  () => layer.setStyle({ weight: 4 }));
+            tracker.variantLayers[v.id] = layer;
+        });
+    }
+
+    // Re-enable vertex editing if this layer is currently being edited
+    if (editingRoute && editingRoute.groupId === group.id) {
+        const newLayer = editingRoute.kind === 'trunk'
+            ? tracker.trunkLayer
+            : tracker.variantLayers[editingRoute.variantId];
+        if (newLayer) {
+            // Pega na primeira sub-layer (L.GeoJSON wrapper → polyline interna)
+            const polyline = newLayer.getLayers && newLayer.getLayers()[0];
+            if (polyline && polyline.editing) {
+                polyline.editing.enable();
+                editingRoute.layer = polyline;
+            }
+        }
+    }
+}
+
+function removeGroupRouteLayers(groupId) {
+    const tracker = groupRouteLayers[groupId];
+    if (!tracker) return;
+    if (tracker.trunkLayer) { try { map.removeLayer(tracker.trunkLayer); } catch {} }
+    Object.values(tracker.variantLayers || {}).forEach(l => { try { map.removeLayer(l); } catch {} });
+    delete groupRouteLayers[groupId];
+}
+
+// -- Drawing flow ---------------------------------------------------------
+function startDrawTrunk(groupId) {
+    const group = groups.find(g => g.id === groupId);
+    if (!group) return;
+    if (editingRoute) finishRouteEdit(true);
+    if (isDrawingRoute) cancelRouteDrawing();
+    if (group.route && group.route.trunk) {
+        if (!confirm(`O grupo "${group.name}" já tem um tronco desenhado. Substituir?`)) return;
+    }
+    isDrawingRoute = { groupId, kind: 'trunk' };
+    routeDrawHandler = new L.Draw.Polyline(map, {
+        shapeOptions: { color: group.color, weight: 5, opacity: 0.85 },
+        showLength: true, metric: true, allowIntersection: true
+    });
+    routeDrawHandler.enable();
+    toast(`A desenhar tronco de "${group.name}". Duplo clique para terminar, ESC para cancelar.`, 'info');
+    renderGroups();
+}
+
+function startDrawVariant(groupId, direction) {
+    const group = groups.find(g => g.id === groupId);
+    if (!group) return;
+    if (editingRoute) finishRouteEdit(true);
+    if (isDrawingRoute) cancelRouteDrawing();
+    isDrawingRoute = { groupId, kind: 'variant', direction: direction === 'inbound' ? 'inbound' : 'outbound' };
+    routeDrawHandler = new L.Draw.Polyline(map, {
+        shapeOptions: { color: group.color, weight: 4, opacity: 0.9, dashArray: '8,6' },
+        showLength: true, metric: true, allowIntersection: true
+    });
+    routeDrawHandler.enable();
+    const dirLabel = direction === 'inbound' ? 'volta' : 'ida';
+    toast(`A desenhar variante (${dirLabel}) de "${group.name}". Duplo clique para terminar, ESC para cancelar.`, 'info');
+    renderGroups();
+}
+
+function finishRouteDrawing(geometry) {
+    if (!isDrawingRoute || !geometry) { cancelRouteDrawing(); return; }
+    const { groupId, kind, direction } = isDrawingRoute;
+    const group = groups.find(g => g.id === groupId);
+    if (!group) { cancelRouteDrawing(); return; }
+    ensureRouteShape(group);
+    saveState();
+    if (kind === 'trunk') {
+        group.route.trunk = geometry;
+        toast(`Tronco de "${group.name}" desenhado (${formatRouteDistance(lineLengthM(geometry))}).`, 'success');
+    } else {
+        const id = Date.now() + Math.random();
+        group.route.variants.push({ id, direction: direction || 'outbound', geometry });
+        toast(`Variante adicionada a "${group.name}" (${formatRouteDistance(lineLengthM(geometry))}).`, 'success');
+    }
+    isDrawingRoute = null;
+    routeDrawHandler = null;
+    renderGroupRoute(group);
+    renderGroups();
+}
+
+function cancelRouteDrawing() {
+    if (routeDrawHandler) {
+        try { routeDrawHandler.disable(); } catch {}
+        routeDrawHandler = null;
+    }
+    isDrawingRoute = null;
+    renderGroups();
+}
+
+// -- Vertex editing -------------------------------------------------------
+function startRouteEdit(groupId, kind, variantId) {
+    if (isDrawingRoute) cancelRouteDrawing();
+    if (editingRoute) finishRouteEdit(true);
+    const tracker = groupRouteLayers[groupId];
+    if (!tracker) return;
+    const wrapper = kind === 'trunk' ? tracker.trunkLayer : tracker.variantLayers[variantId];
+    if (!wrapper) return;
+    const polyline = wrapper.getLayers ? wrapper.getLayers()[0] : wrapper;
+    if (!polyline || !polyline.editing) return;
+    polyline.editing.enable();
+    editingRoute = { groupId, kind, variantId, layer: polyline };
+    toast('Arraste vértices para editar. Carregue em ✓ para guardar ou ESC para cancelar.', 'info');
+    renderGroups();
+}
+
+function finishRouteEdit(save) {
+    if (!editingRoute) return;
+    const { groupId, kind, variantId, layer } = editingRoute;
+    const group = groups.find(g => g.id === groupId);
+    if (save && group && layer) {
+        const geo = layer.toGeoJSON();
+        const newGeom = (geo && geo.geometry) || null;
+        if (newGeom && newGeom.type === 'LineString' && newGeom.coordinates.length >= 2) {
+            saveState();
+            ensureRouteShape(group);
+            if (kind === 'trunk') {
+                group.route.trunk = newGeom;
+            } else {
+                const v = group.route.variants.find(x => x.id === variantId);
+                if (v) v.geometry = newGeom;
+            }
+        }
+    }
+    try { layer.editing.disable(); } catch {}
+    editingRoute = null;
+    if (group) renderGroupRoute(group);
+    renderGroups();
+}
+
+// -- Deletion -------------------------------------------------------------
+function deleteRouteTrunk(groupId) {
+    const group = groups.find(g => g.id === groupId);
+    if (!group || !group.route || !group.route.trunk) return;
+    if (!confirm(`Apagar o tronco da rota de "${group.name}"?`)) return;
+    if (editingRoute && editingRoute.groupId === groupId && editingRoute.kind === 'trunk') {
+        try { editingRoute.layer.editing.disable(); } catch {}
+        editingRoute = null;
+    }
+    saveState();
+    group.route.trunk = null;
+    renderGroupRoute(group);
+    renderGroups();
+}
+
+function deleteRouteVariant(groupId, variantId) {
+    const group = groups.find(g => g.id === groupId);
+    if (!group || !group.route) return;
+    const v = (group.route.variants || []).find(x => x.id === variantId);
+    if (!v) return;
+    if (!confirm(`Apagar esta variante de "${group.name}"?`)) return;
+    if (editingRoute && editingRoute.groupId === groupId && editingRoute.kind === 'variant' && editingRoute.variantId === variantId) {
+        try { editingRoute.layer.editing.disable(); } catch {}
+        editingRoute = null;
+    }
+    saveState();
+    group.route.variants = group.route.variants.filter(x => x.id !== variantId);
+    renderGroupRoute(group);
+    renderGroups();
 }
 
 function renderGroups() {
@@ -376,14 +663,56 @@ function renderGroups() {
     container.innerHTML = groups.map(g => {
         const count = stations.filter(s => s.groupId === g.id).length;
         const isActive = g.id === activeGroupId;
+        const route = ensureRouteShape(g);
+        const len = getRouteLengthM(g);
+        const drawingTrunk   = isDrawingRoute && isDrawingRoute.groupId === g.id && isDrawingRoute.kind === 'trunk';
+        const drawingVariant = isDrawingRoute && isDrawingRoute.groupId === g.id && isDrawingRoute.kind === 'variant';
+        const editingTrunk   = editingRoute  && editingRoute.groupId  === g.id && editingRoute.kind  === 'trunk';
         return `
             <div class="group-row ${isActive ? 'active' : ''}" data-group-id="${g.id}">
-                <div class="group-color-swatch" style="background:${g.color}" data-action="color" title="Mudar cor"></div>
-                <input class="group-name-input" value="${escapeHtml(g.name)}" data-action="rename" />
-                <span class="group-badge">${count}</span>
-                <button class="group-btn btn-visibility" data-action="visibility" title="${g.visible ? 'Ocultar' : 'Mostrar'}">${g.visible ? ICON_EYE : ICON_EYE_OFF}</button>
-                <button class="group-btn btn-duplicate-group" data-action="duplicate" title="Duplicar grupo">⎘</button>
-                <button class="group-btn btn-delete-group" data-action="delete" title="Apagar grupo">×</button>
+                <div class="group-main">
+                    <div class="group-color-swatch" style="background:${g.color}" data-action="color" title="Mudar cor"></div>
+                    <input class="group-name-input" value="${escapeHtml(g.name)}" data-action="rename" />
+                    <span class="group-badge">${count}</span>
+                    <button class="group-btn btn-visibility" data-action="visibility" title="${g.visible ? 'Ocultar' : 'Mostrar'}">${g.visible ? ICON_EYE : ICON_EYE_OFF}</button>
+                    <button class="group-btn btn-duplicate-group" data-action="duplicate" title="Duplicar grupo">⎘</button>
+                    <button class="group-btn btn-delete-group" data-action="delete" title="Apagar grupo">×</button>
+                </div>
+                <div class="group-route ${drawingTrunk || drawingVariant ? 'is-drawing' : ''}">
+                    ${route.trunk ? `
+                        <span class="route-len" title="Tronco × 2 + variantes">${formatRouteDistance(len.operational)}</span>
+                        ${drawingTrunk
+                            ? `<button class="route-btn route-cancel" data-action="cancel-draw" title="Cancelar desenho">Cancelar</button>`
+                            : `
+                                <button class="route-btn ${editingTrunk ? 'is-editing' : ''}" data-action="${editingTrunk ? 'edit-save-trunk' : 'edit-trunk'}" title="${editingTrunk ? 'Guardar edição' : 'Editar tronco'}">${editingTrunk ? '✓' : '✎'}</button>
+                                <button class="route-btn" data-action="add-variant-out" title="Adicionar variante (ida)">+ida</button>
+                                <button class="route-btn" data-action="add-variant-in"  title="Adicionar variante (volta)">+volta</button>
+                                <button class="route-btn route-danger" data-action="delete-trunk" title="Apagar tronco">×</button>
+                              `
+                        }
+                    ` : `
+                        ${drawingTrunk
+                            ? `<button class="route-btn route-cancel" data-action="cancel-draw" title="Cancelar desenho">Cancelar desenho</button>`
+                            : `<button class="route-btn route-primary" data-action="draw-trunk" title="Desenhar percurso da linha">↝ Desenhar rota</button>`
+                        }
+                    `}
+                </div>
+                ${(route.variants && route.variants.length > 0) ? `
+                    <div class="group-variants">
+                        ${route.variants.map(v => {
+                            const editingThis = editingRoute && editingRoute.groupId === g.id && editingRoute.kind === 'variant' && editingRoute.variantId === v.id;
+                            const dirLabel = v.direction === 'inbound' ? 'volta' : 'ida';
+                            return `
+                                <div class="variant-row" data-variant-id="${v.id}">
+                                    <span class="variant-tag variant-tag-${v.direction === 'inbound' ? 'in' : 'out'}">${dirLabel}</span>
+                                    <span class="route-len">${formatRouteDistance(lineLengthM(v.geometry))}</span>
+                                    <button class="route-btn ${editingThis ? 'is-editing' : ''}" data-action="${editingThis ? 'edit-save-variant' : 'edit-variant'}" title="${editingThis ? 'Guardar edição' : 'Editar vértices'}">${editingThis ? '✓' : '✎'}</button>
+                                    <button class="route-btn route-danger" data-action="delete-variant" title="Apagar variante">×</button>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                ` : ''}
             </div>
         `;
     }).join('');
@@ -394,13 +723,28 @@ function renderGroups() {
 
         row.addEventListener('click', (e) => {
             const action = e.target.dataset.action || e.target.closest('[data-action]')?.dataset.action;
+            const variantRow = e.target.closest('.variant-row');
+            const vid = variantRow ? parseFloat(variantRow.dataset.variantId) : null;
             if (!action) { setActiveGroup(gid); return; }
-            if (action === 'color') { showColorPicker(e.target, gid); }
-            else if (action === 'visibility') { toggleGroupVisibility(gid); }
-            else if (action === 'duplicate') { duplicateGroup(gid); }
-            else if (action === 'delete') { deleteGroup(gid); }
-            else if (action === 'rename') { /* handled by input change */ }
-            else { setActiveGroup(gid); }
+            e.stopPropagation();
+            switch (action) {
+                case 'color':       showColorPicker(e.target, gid); break;
+                case 'visibility':  toggleGroupVisibility(gid); break;
+                case 'duplicate':   duplicateGroup(gid); break;
+                case 'delete':      deleteGroup(gid); break;
+                case 'rename':      /* handled by input change */ break;
+                case 'draw-trunk':  startDrawTrunk(gid); break;
+                case 'cancel-draw': cancelRouteDrawing(); break;
+                case 'edit-trunk':  startRouteEdit(gid, 'trunk'); break;
+                case 'edit-save-trunk': finishRouteEdit(true); break;
+                case 'add-variant-out': startDrawVariant(gid, 'outbound'); break;
+                case 'add-variant-in':  startDrawVariant(gid, 'inbound'); break;
+                case 'delete-trunk':    deleteRouteTrunk(gid); break;
+                case 'edit-variant':    if (vid !== null) startRouteEdit(gid, 'variant', vid); break;
+                case 'edit-save-variant': finishRouteEdit(true); break;
+                case 'delete-variant':  if (vid !== null) deleteRouteVariant(gid, vid); break;
+                default: setActiveGroup(gid);
+            }
         });
 
         const nameInput = row.querySelector('.group-name-input');
@@ -433,6 +777,7 @@ function showColorPicker(swatchEl, groupId) {
                 group.color = c;
                 renderGroups();
                 updateMap();
+                renderAllRoutes();
                 updateSidebar();
             }
             closeColorPicker();
@@ -554,6 +899,7 @@ function clearAllStations() {
     if (confirm('Tem a certeza que deseja remover todas as estações e grupos?')) {
         saveState();
         stations = [];
+        groups.forEach(g => removeGroupRouteLayers(g.id));
         groups = [];
         activeGroupId = null;
         isochroneQueue = []; // discard any pending requests
@@ -632,6 +978,13 @@ function updateMap() {
         } else {
             initializeStationIsochrones(station);
         }
+    });
+
+    // Routes (cor / visibilidade podem ter mudado, ou existem grupos sem layer ainda)
+    renderAllRoutes();
+    // Garantir que rotas de grupos apagados são removidas do mapa
+    Object.keys(groupRouteLayers).forEach(gid => {
+        if (!groups.find(g => String(g.id) === String(gid))) removeGroupRouteLayers(gid);
     });
 }
 
@@ -2181,9 +2534,20 @@ function renderDensityLegend() {
 // ============================================================
 function saveProject() {
     const project = {
-        version: '2.0',
+        version: '2.1',
         saved_at: new Date().toISOString(),
-        groups: groups.map(g => ({ id: g.id, name: g.name, color: g.color, visible: g.visible })),
+        groups: groups.map(g => {
+            const route = ensureRouteShape(g);
+            return {
+                id: g.id, name: g.name, color: g.color, visible: g.visible,
+                route: {
+                    trunk: route.trunk || null,
+                    variants: (route.variants || []).map(v => ({
+                        id: v.id, direction: v.direction, geometry: v.geometry
+                    }))
+                }
+            };
+        }),
         activeGroupId,
         stations: stations.map(s => ({
             id: s.id, lat: s.lat, lng: s.lng, groupId: s.groupId,
@@ -2225,11 +2589,28 @@ async function loadProject(event) {
         stations.forEach(s => removeStationIsochrones(s.id));
         stationMarkers.forEach(m => { try { map.removeLayer(m); } catch {} });
         newUrbanizations.forEach(u => u.layers.forEach(l => { try { map.removeLayer(l); } catch {} }));
+        groups.forEach(g => removeGroupRouteLayers(g.id));
+        if (isDrawingRoute) cancelRouteDrawing();
+        if (editingRoute) finishRouteEdit(false);
         if (censusLayer) { map.removeLayer(censusLayer); censusLayer = null; }
         drawnItems.clearLayers();
 
-        // Restore groups
-        groups = project.groups.map(g => ({ ...g }));
+        // Restore groups (incluindo migração de projetos v2.0 sem rotas)
+        groups = project.groups.map(g => ({
+            ...g,
+            route: g.route
+                ? {
+                    trunk: g.route.trunk || null,
+                    variants: Array.isArray(g.route.variants)
+                        ? g.route.variants.map(v => ({
+                            id: v.id != null ? v.id : (Date.now() + Math.random()),
+                            direction: v.direction === 'inbound' ? 'inbound' : 'outbound',
+                            geometry: v.geometry || null
+                        })).filter(v => v.geometry)
+                        : []
+                }
+                : { trunk: null, variants: [] }
+        }));
         activeGroupId = project.activeGroupId || (groups[0] && groups[0].id);
 
         // Restore stations (will trigger isochrone fetch)

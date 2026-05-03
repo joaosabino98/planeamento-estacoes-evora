@@ -10,6 +10,7 @@ Ferramenta web interativa para avaliar a cobertura pedonal de redes de transport
 
 - Adicionar paragens clicando no mapa; arrastar para reposicionar; remover com ×
 - Organização em **grupos com nome e cor** personalizáveis; visibilidade por grupo; **duplicação** de um grupo inteiro (clona estações para uma nova cor e nome); apagar um grupo remove o grupo e todas as suas estações (com confirmação)
+- **Percurso da linha por grupo** (modo livre): desenhar o **tronco** bidirecional (cada metro percorre-se nos dois sentidos) e adicionar **variantes** unidirecionais para diferenças nas pontas, rotundas ou ruas de sentido único — sem desenhar troços comuns duas vezes. Edição de vértices in-place, comprimento operacional (`tronco × 2 + Σ variantes`) mostrado no painel. As paragens podem ficar afastadas do percurso (o pin define o catchment, a linha descreve só o trajeto) e o desenho é livre — passa por ecopistas, troços novos ou caminhos sem categoria viária.
 - **Isócronas reais** de 5 e 10 minutos a pé via OpenRouteService (fallback para círculo quando a API não está disponível)
 - Cálculo de **população residente** nas áreas de captação, sem dupla contagem entre estações sobrepostas
 - Estatísticas por grupo (5 min / 10 min / total, calculadas por união das isócronas do grupo — sem dupla contagem entre estações da mesma linha) e totais globais em tempo real

@@ -161,7 +161,9 @@ def _isochrone_cache_key(lat, lng): return f"{round(float(lat), 5)},{round(float
 map; activeTab // 'stations' | 'scenario'
 
 // Stations & groups
-groups[]                  // [{ id, name, color, visible }]
+groups[]                  // [{ id, name, color, visible,
+                          //    route: { trunk: LineString|null,
+                          //             variants: [{ id, direction: 'outbound'|'inbound', geometry: LineString }] } }]
 activeGroupId
 stations[]                // [{ id, lat, lng, groupId, name (GTFS|null),
                           //    isochrones[], cachedLat, cachedLng,
@@ -171,6 +173,12 @@ stationMarkers[]; isochroneLayers[]; stationIsochroneLayers{ [stationId]: [layer
 augmentedIsochroneLayers{ [stationId]: [layer5, layer10] }   // overlay "preenche polígono"
 showAugmentedOverlay = true                                  // toggle no painel "Cenário Urbano"
 const WALK_SPEED_KM_PER_MIN = 0.0834                         // espelha server.WALK_SPEED_M_PER_MIN
+
+// Routes (per‑group)
+groupRouteLayers{}        // { [groupId]: { trunkLayer, variantLayers: { [variantId]: layer } } }
+routeDrawHandler          // L.Draw.Polyline ativo (ou null)
+isDrawingRoute            // { groupId, kind: 'trunk'|'variant', direction? } | null
+editingRoute              // { groupId, kind, variantId?, layer } | null
 
 // City-wide & global stats
 const CITY_TOTAL_JOBS = 23674   // hardcoded CME Évora figure
@@ -232,7 +240,12 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `renameUrbanization(id, name)` | Updates `u.name` and `setIcon()` on `urb.layers[1]` |
 | `renderUncoveredBgris()` / `toggleUncoveredBgri(b, el)` / `clearUncoveredHighlight()` | Uncovered BGRI list in scenario tab; orange highlight (`#dd6b20`, weight 3) + `flyTo` |
 | `importGTFS(event)` | Wipes state (groups, stations, queue, jobs, overlap), creates new groups+stations, runs queue; uses overlay |
-| `saveProject()` / `loadProject(event)` | Single JSON file for full state; does NOT serialise isochrones or jobs |
+| `saveProject()` / `loadProject(event)` | Single JSON file for full state; does NOT serialise isochrones or jobs. Format `version: '2.1'` (acrescenta `route` por grupo); v2.0 carrega normalmente sem rotas. |
+| `renderAllRoutes()` / `renderGroupRoute(g)` | (Re)constrói as polylines do `routePane` para cada grupo a partir de `g.route`; chamadas em `updateMap()`, mudança de cor e visibilidade. |
+| `startDrawTrunk(gid)` / `startDrawVariant(gid, dir)` / `finishRouteDrawing(geom)` / `cancelRouteDrawing()` | Fluxo de desenho com `L.Draw.Polyline` em modo livre (sem snap). Bloqueia `addStation` enquanto `isDrawingRoute` está ativo. |
+| `startRouteEdit(gid, kind, variantId?)` / `finishRouteEdit(save)` | Edição de vértices via `layer.editing.enable()`; guarda em `g.route.trunk` / `variants[i].geometry`. |
+| `deleteRouteTrunk(gid)` / `deleteRouteVariant(gid, vid)` / `removeGroupRouteLayers(gid)` | Apagam geometria e layers do mapa. |
+| `getRouteLengthM(g)` / `lineLengthM(geom)` / `formatRouteDistance(m)` | Comprimento operacional = `length(trunk) × 2 + Σ length(variants)` (turf 6, em km → m). Apenas visual; não entra em população nem empregos. |
 | `showStationsLoading(msg)` / `update…` / `showStationsLoadingError(msg)` / `hideStationsLoading()` | Stations-tab overlay; locks scroll; error state has retry button |
 | `captureMapToImage({bounds, width, height, stationMarkers, isochroneFeatures, labelledDots})` | Off-screen Leaflet map → `html2canvas`; never touches the live map |
 | `exportReport()` | Captures overview + uncovered maps; builds HTML report with KPIs, scenario, per-group tables, uncovered section |
@@ -246,9 +259,11 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `tilePane` (default) | 200 | OSM tiles |
 | `censusPane` (custom) | 200 | BGRI choropleth — always below isochrones |
 | `overlayPane` (default) | 400 | Isochrone polygons, urbanisation polygons |
+| `routePane` (custom) | 350 | Group routes (trunk + variants) — above isochrones, below markers |
 | `markerPane` (default) | 600 | Station markers, urbanisation labels |
 
 > Census GeoJSON **must** use `pane: 'censusPane'`. Otherwise it stacks over isochrones.
+> Route polylines **must** use `pane: 'routePane'` so they remain visible over isochrones without occluding station markers.
 
 ---
 
@@ -383,6 +398,11 @@ These rules have dedicated asserts — just run `pytest -q` to verify. If one fa
 | Topic | Decision |
 |---|---|
 | Census layer pane | Always `pane: 'censusPane'` (z=200). Bring isochrones to front after adding. |
+| Route pane | Group routes (trunk + variants) **must** use `pane: 'routePane'` (z=350). Não pintar para `overlayPane` (esconder-se-iam atrás das isócronas) nem para `markerPane` (cobririam os pins). |
+| Routes são puramente visuais | `group.route.{trunk,variants}` não entram em `calculatePopulation`, `calculateJobs` nem `computeOverlaps`. As paragens não têm de coincidir com a geometria — o pin define o catchment, a rota descreve só o percurso. |
+| Comprimento operacional da rota | `length(trunk) × 2 + Σ length(variants)` (`getRouteLengthM`). O tronco é bidirecional (×2); as variantes são unidirecionais (×1). |
+| Modo de desenho da rota | Apenas livre (`L.Draw.Polyline` sem snap). `addStation` é bloqueado enquanto `isDrawingRoute` está ativo. ESC cancela desenho ou edição em curso (antes de chamar `cancelEdit`). |
+| Versão do projeto JSON | `saveProject` escreve `version: '2.1'` com `route` por grupo; `loadProject` aceita também `2.0` (sem rotas) sem migração. Mexer no formato implica bumpar a versão e atualizar a migração. |
 | No floors input | Formula is `residents_ha × area_ha × coverage/100`. |
 | Edit panel floats | `position:fixed; bottom:24px; right:24px`; opacity/transform toggle. ESC, ✕, empty-map click close it. |
 | No CSV in UI | Single JSON for save/load. Endpoints exist but are unused. |
