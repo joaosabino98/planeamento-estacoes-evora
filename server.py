@@ -1171,9 +1171,18 @@ def calculate_population():
 
 @app.route('/api/jobs-in-isochrones', methods=['POST'])
 def jobs_in_isochrones():
-    """Estima empregos e índice de mix de usos (H) por isócrona via dados OSM (Overpass API)."""
+    """Estima empregos e índice de mix de usos (H) por isócrona via dados OSM (Overpass API).
+
+    Aceita opcionalmente ``new_urbanizations``: cada urbanização contribui com
+    empregos paramétricos (``jobs_ha × area_ha × coverage``) distribuídos pelo
+    ``mix`` (proporção das 5 categorias). Para evitar dupla contagem, os POIs
+    do OSM que caem dentro do polígono de qualquer urbanização são descartados;
+    a contribuição da urbanização para uma estação é proporcional à fração
+    da urbanização coberta pela isócrona de 5 min dessa estação.
+    """
     data = request.json
     stations_data = data.get('stations', [])
+    new_urbanizations = data.get('new_urbanizations', []) or []
 
     if not stations_data:
         return jsonify({'stations': []})
@@ -1334,15 +1343,112 @@ def jobs_in_isochrones():
     results = []
     CATEGORIES = ['commerce', 'services', 'education_health', 'culture_leisure', 'industry']
 
-    for sg in station_geoms:
-        geom = sg['geom_5']
-        station_pois = [p for p in pois if geom.contains(p['point'])]
+    # ── 5a. Pré-processamento das urbanizações ────────────────────────────
+    # ``urb_filter_polys_wgs`` agrega todos os polígonos válidos (WGS84) e é
+    # usado apenas para descartar POIs OSM dentro deles (evita dupla contagem
+    # com a estimativa paramétrica). ``urb_contributors`` guarda apenas as
+    # urbanizações que de facto contribuem com empregos (``jobs_ha>0`` e
+    # ``coverage>0``), já em CRS métrico, com ``total_jobs`` e ``mix``
+    # normalizado.
+    urb_filter_polys_wgs = []
+    urb_contributors = []
+    if new_urbanizations:
+        contrib_wgs_list = []
+        contrib_meta = []
+        for u in new_urbanizations:
+            try:
+                g = shape(u.get('geometry'))
+                if g.is_empty or g.area <= 0:
+                    continue
+            except Exception:
+                continue
+            urb_filter_polys_wgs.append(g)
+            jobs_ha = float(u.get('jobs_ha') or 0)
+            coverage = float(u.get('coverage') or 0) / 100.0
+            if jobs_ha <= 0 or coverage <= 0:
+                continue  # filtra POIs mas não contribui com empregos
+            mix_raw = u.get('mix') or {}
+            mix = {c: max(0.0, float(mix_raw.get(c, 0))) for c in CATEGORIES}
+            s_mix = sum(mix.values())
+            if s_mix > 0:
+                mix = {c: mix[c] / s_mix for c in CATEGORIES}
+            else:
+                mix = {c: 1.0 / len(CATEGORIES) for c in CATEGORIES}
+            contrib_wgs_list.append(g)
+            contrib_meta.append({'jobs_ha': jobs_ha, 'coverage': coverage, 'mix': mix})
 
-        breakdown = {c: 0 for c in CATEGORIES}
+        if contrib_wgs_list:
+            try:
+                metric_geoms = list(
+                    gpd.GeoDataFrame(geometry=contrib_wgs_list, crs="EPSG:4326")
+                       .to_crs(AUGMENT_METRIC_CRS).geometry
+                )
+                for g_m, meta in zip(metric_geoms, contrib_meta):
+                    area_m2 = g_m.area
+                    if area_m2 <= 0:
+                        continue
+                    area_ha = area_m2 / 10000.0
+                    urb_contributors.append({
+                        'geom_metric': g_m,
+                        'area_m2':     area_m2,
+                        'total_jobs':  meta['jobs_ha'] * area_ha * meta['coverage'],
+                        'mix':         meta['mix'],
+                    })
+            except Exception as e:
+                print(f"Aviso: falha no pré-processamento de urbanizações para empregos: {e}")
+                urb_contributors = []
+
+    urb_union_wgs = unary_union(urb_filter_polys_wgs) if urb_filter_polys_wgs else None
+
+    # Pré-projeção das isócronas para CRS métrico (só necessária se houver urbs
+    # contribuintes — partilhada entre o loop por estação e a totalização global).
+    station_geom5_metric = []
+    if urb_contributors:
+        try:
+            station_geom5_metric = list(
+                gpd.GeoDataFrame(geometry=[sg['geom_5'] for sg in station_geoms], crs="EPSG:4326")
+                   .to_crs(AUGMENT_METRIC_CRS).geometry
+            )
+        except Exception as e:
+            print(f"Aviso: falha na projeção das isócronas para CRS métrico: {e}")
+            station_geom5_metric = []
+
+    for sg_idx, sg in enumerate(station_geoms):
+        geom = sg['geom_5']
+        # Descartar POIs dentro de qualquer urbanização (evita dupla contagem
+        # com a estimativa paramétrica baseada em jobs_ha).
+        if urb_union_wgs is not None:
+            station_pois = [p for p in pois
+                            if geom.contains(p['point']) and not urb_union_wgs.contains(p['point'])]
+        else:
+            station_pois = [p for p in pois if geom.contains(p['point'])]
+
+        breakdown = {c: 0.0 for c in CATEGORIES}
         for p in station_pois:
             cat = p['category']
             if cat in breakdown:
                 breakdown[cat] += p['jobs']
+
+        jobs_from_pois = sum(breakdown.values())
+
+        # Contribuição das urbanizações: prorated pela fração da urb dentro da isócrona 5min.
+        jobs_from_urb = 0.0
+        if urb_contributors and station_geom5_metric:
+            geom_m = station_geom5_metric[sg_idx]
+            for r in urb_contributors:
+                try:
+                    inter = geom_m.intersection(r['geom_metric'])
+                    if inter.is_empty:
+                        continue
+                    frac = inter.area / r['area_m2']
+                    if frac <= 0:
+                        continue
+                    add = r['total_jobs'] * frac
+                    jobs_from_urb += add
+                    for c in CATEGORIES:
+                        breakdown[c] += add * r['mix'][c]
+                except Exception:
+                    continue
 
         jobs_total = sum(breakdown.values())
         poi_count  = len(station_pois)
@@ -1367,8 +1473,10 @@ def jobs_in_isochrones():
 
         results.append({
             'id':                   sg['id'],
-            'jobs_total':           jobs_total,
+            'jobs_total':           round(jobs_total),
             'jobs_breakdown':       {k: round(v) for k, v in breakdown.items()},
+            'jobs_from_pois':       round(jobs_from_pois),
+            'jobs_from_urbanizations': round(jobs_from_urb),
             'shannon_h':            h_norm,
             'tod_classification':   classification,
             'self_sufficiency':     self_sufficiency,
@@ -1377,7 +1485,37 @@ def jobs_in_isochrones():
             'pois':                 poi_list,
         })
 
-    return jsonify({'stations': results})
+    # ── 6. Total agregado de empregos cobertos pela rede ──────────────────
+    # Soma única e deduplicada: cada POI conta uma vez (filtrado pela união
+    # das isócronas 5 min, e descartado se cair dentro de qualquer urbanização);
+    # cada urbanização contribui prorated pela fração coberta pela mesma união.
+    # Permite ao frontend mostrar o total directamente, sem dedup local.
+    total_jobs_covered = 0.0
+    if station_geoms:
+        try:
+            stations_union_wgs = unary_union([sg['geom_5'] for sg in station_geoms])
+            for p in pois:
+                if not stations_union_wgs.contains(p['point']):
+                    continue
+                if urb_union_wgs is not None and urb_union_wgs.contains(p['point']):
+                    continue
+                total_jobs_covered += p['jobs']
+            if urb_contributors and station_geom5_metric:
+                stations_union_metric = unary_union(station_geom5_metric)
+                for r in urb_contributors:
+                    inter = stations_union_metric.intersection(r['geom_metric'])
+                    if inter.is_empty:
+                        continue
+                    frac = inter.area / r['area_m2']
+                    if frac > 0:
+                        total_jobs_covered += r['total_jobs'] * frac
+        except Exception as e:
+            print(f"Aviso: falha no cálculo do total de empregos cobertos: {e}")
+
+    return jsonify({
+        'stations': results,
+        'total_jobs_covered': round(total_jobs_covered),
+    })
 
 
 @app.route('/api/import-gtfs', methods=['POST'])

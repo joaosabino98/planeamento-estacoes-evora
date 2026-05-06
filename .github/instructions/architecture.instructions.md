@@ -75,35 +75,51 @@ Response (extra fields beyond per-point totals):
 
 ### `/api/jobs-in-isochrones`
 
-Request: `{ "stations": [{ "id", "isochrone_5min": <Feature> }] }`
+Request: `{ "stations": [{ "id", "lat", "lng", "isochrones", "population_5min" }],
+            "new_urbanizations": [{ "id", "geometry", "jobs_ha", "coverage", "mix" }] }`
 
-Response per station:
+`new_urbanizations` is optional. Each urbanisation contributes parametric jobs
+(`jobs_ha × area_ha × coverage/100`) distributed by `mix` (proportions over the
+5 categories, normalised server-side to sum to 1). To avoid double counting,
+**OSM POIs that fall inside any urbanisation polygon are discarded** before
+aggregation. The contribution of an urbanisation to a station is prorated by
+`area_intersect / area_urb` in metric CRS (UTM 29N).
+
+Response:
 ```json
 {
-  "id": "uuid",
-  "jobs_total": 420,
-  "jobs_breakdown": {
-    "commerce": 120, "services": 85, "education_health": 95,
-    "culture_leisure": 40, "food_beverage": 60, "industry": 20
-  },
-  "shannon_h": 0.72,
-  "tod_classification": "Centralidade multifuncional",
-  "self_sufficiency": 0.58,
-  "poi_count": 143,
-  "low_coverage_warning": false,
-  "pois": [{ "lat", "lng", "category", "name", "jobs", "osm_id" }]
+  "stations": [{
+    "id": "uuid",
+    "jobs_total": 420,
+    "jobs_breakdown": {
+      "commerce": 120, "services": 85, "education_health": 95,
+      "culture_leisure": 40, "industry": 20
+    },
+    "jobs_from_pois": 320,
+    "jobs_from_urbanizations": 100,
+    "shannon_h": 0.72,
+    "tod_classification": "Centralidade multifuncional",
+    "self_sufficiency": 0.58,
+    "poi_count": 143,
+    "low_coverage_warning": false,
+    "pois": [{ "lat", "lng", "category", "name", "jobs", "osm_id" }]
+  }],
+  "total_jobs_covered": 1840
 }
 ```
-`osm_id` format is `"{type}_{id}"` (e.g. `"node_123456"`) and is what the frontend uses to dedupe across stations.
+`total_jobs_covered` is **the single source of truth for the global jobs total** consumed by the resume card, the coverage card and the report. It is already deduplicated server-side: each POI counts once (filtered by `unary_union` of the 5 min isochrones, and discarded if it falls inside any urbanisation), and each urbanisation contributes prorated by `area(union ∩ urb) / area(urb)`. The frontend must not sum per-station values to derive a global. `osm_id` is kept on each POI only for marker rendering / map clicks.
 
 **Algorithm:**
 1. Build single bbox covering all isochrones (one Overpass query, not one per station).
 2. Query `node`/`way`/`relation` with the relevant tags.
 3. `classify_poi_tags(el_type, tags) → (category, jobs_estimate)`.
-4. Filter by point-in-polygon against each isochrone.
-5. Compute `shannon_h` via `compute_shannon_h(residents, breakdown)` → `(h_norm, classification)`.
-6. `self_sufficiency = jobs_total / (residents_5min × ACTIVE_POPULATION_RATIO)`; returns `1.0` when `residents = 0` and `jobs > 0` (do **not** revert to `0.0`).
-7. `low_coverage_warning = poi_count < 10`.
+4. Pre-process `new_urbanizations` into two structures: `urb_filter_polys_wgs` (every valid polygon, used to build `urb_union_wgs` that filters POIs) and `urb_contributors` (only urbs with `jobs_ha > 0` and `coverage > 0`, projected to EPSG:32629 with `total_jobs` and normalised `mix`). Station 5 min isochrones are projected to metric once and reused.
+5. Per station: filter POIs by point-in-polygon against the WGS isochrone, **excluding POIs inside `urb_union_wgs`**. Sum into `breakdown` and record `jobs_from_pois`.
+6. Per station × urb contributor: add `total_jobs × (area_intersect / area_urb)` to `breakdown` via `mix` and record `jobs_from_urbanizations`.
+7. Global `total_jobs_covered`: sum POIs with `unary_union(iso5).contains(p)` (POI dedup), plus `Σ contributor.total_jobs × area(union_metric ∩ urb_metric) / area(urb_metric)` (urb dedup). One pass, single field.
+8. Compute `shannon_h` via `compute_shannon_h(residents, breakdown)` → `(h_norm, classification)`.
+9. `self_sufficiency = jobs_total / (residents_5min × ACTIVE_POPULATION_RATIO)`; returns `1.0` when `residents = 0` and `jobs > 0` (do **not** revert to `0.0`).
+10. `low_coverage_warning = poi_count < 10`.
 
 **Global constants** (server.py, top of file):
 
@@ -170,14 +186,14 @@ stations[]                // [{ id, lat, lng, groupId, name (GTFS|null),
                           //    isochroneError, creatingIsochrones,
                           //    population_5min, population_10min, population_total }]
 stationMarkers[]; isochroneLayers[]; stationIsochroneLayers{ [stationId]: [layer, layer] }
-augmentedIsochroneLayers{ [stationId]: [layer5, layer10] }   // overlay "preenche polígono"
-showAugmentedOverlay = true                                  // toggle no painel "Cenário Urbano"
-showNewUrbanizations = true                                  // toggle de visibilidade das novas urbanizações (apenas visual)
-const WALK_SPEED_KM_PER_MIN = 0.0834                         // espelha server.WALK_SPEED_M_PER_MIN
+augmentedIsochroneLayers{ [stationId]: [layer5, layer10] }   // "fill polygon" overlay
+showAugmentedOverlay = true                                  // toggle in the "Cenário Urbano" panel
+showNewUrbanizations = true                                  // toggle for visibility of new urbanisations (visual only)
+const WALK_SPEED_KM_PER_MIN = 0.0834                         // mirrors server.WALK_SPEED_M_PER_MIN
 
 // Routes (per‑group)
 groupRouteLayers{}        // { [groupId]: { trunkLayer, variantLayers: { [variantId]: layer } } }
-routeDrawHandler          // L.Draw.Polyline ativo (ou null)
+routeDrawHandler          // active L.Draw.Polyline (or null)
 isDrawingRoute            // { groupId, kind: 'trunk'|'variant', direction? } | null
 editingRoute              // { groupId, kind, variantId?, layer } | null
 
@@ -198,7 +214,8 @@ selectedCensusFeature            // { feature, layer } | null
 selectedUncoveredLayer; selectedUncoveredBgriId
 
 // Jobs
-jobsData{}                       // { stationId: { jobs_total, jobs_breakdown, shannon_h, tod_classification, self_sufficiency, poi_count, pois[] } }
+jobsData{}                       // { stationId: { jobs_total, jobs_breakdown, jobs_from_pois, jobs_from_urbanizations, shannon_h, tod_classification, self_sufficiency, poi_count, pois[] } }
+let jobsTotalCovered = 0;        // single deduplicated global total returned by /api/jobs-in-isochrones (POIs via union + urbs prorated)
 jobsPOILayer; jobsPOIVisible
 
 // Overlap analysis
@@ -223,11 +240,11 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `enqueueIsochrone(s)` / `runIsochroneQueue()` | Serialises ORS calls (350 ms gap), then runs `calculatePopulation(false)` → `calculateJobs()` → hide overlay (or show error) |
 | `createIsochrones(s, force)` | Fetches via `/api/isochrones`; falls back to circle; returns `true` if served from disk cache |
 | `drawCachedIsochrones(s, color)` | Draws from `s.isochrones` without fetching |
-| `fillPolygonForStation(stationLngLat, isoFeature, urbFeature, T_min)` | Espelha (turf v6, em km) a função `_fill_polygon_for_station` do servidor. Devolve `Feature<Polygon>` ou `null`. |
-| `refreshAugmentedIsochrones()` | Limpa e re-renderiza o overlay "preenche polígono" (camadas tracejadas). Chamado em `confirmUrbanization`, `removeUrbanization`, `calculatePopulation` (após o backend responder) e quando o toggle muda. Subtrai a isócrona ORS para mostrar só a *extensão* adicionada. |
+| `fillPolygonForStation(stationLngLat, isoFeature, urbFeature, T_min)` | Mirrors (turf v6, in km) the server's `_fill_polygon_for_station`. Returns `Feature<Polygon>` or `null`. |
+| `refreshAugmentedIsochrones()` | Clears and re-renders the "fill polygon" overlay (dashed layers). Called from `confirmUrbanization`, `removeUrbanization`, `calculatePopulation` (after the backend responds) and when the toggle changes. Subtracts the ORS isochrone so only the *added extension* is shown. |
 | `calculatePopulation(triggerJobs=true)` | POSTs to backend; updates `globalPopStats`; calls `renderUncoveredBgris()`; with `triggerJobs=false` skips automatic jobs run (queue runner uses this) |
 | `calculateJobs()` | POSTs to backend; populates `jobsData`; calls `updateJobsSummary()`, `updateSidebar()`, `computeOverlaps()`, `updateScenarioSummary()` if on scenario tab. Returns `true`/`false`. |
-| `updateJobsSummary()` / `updateCoverageCard()` | Updates `#total-jobs`, `#avg-shannon-h`, coverage bars; **dedupes POIs by `osm_id`** |
+| `updateJobsSummary()` / `updateCoverageCard()` | Updates `#total-jobs`, `#avg-shannon-h`, coverage bars; **reads `jobsTotalCovered` directly** — no per-station sum, no `osm_id` dedup, no fallback. |
 | `updateSidebar()` | Orchestrator. Delegates to `renderGroupStats()` (per-line cards using server-side union with per-station fallback), `renderStationCard(s, i)` (full card), `renderJobsSection(jd)` (Shannon H + breakdown), `renderOverlapBadges(overlaps)`. |
 | `statRow(label, value, opts)` / `tierClass(v, okAt, warnAt)` | Render helpers shared by all sidebar cards. `statRow` builds a `.station-stat-row` (`is-total`/`is-sub` modifiers, optional `valueClass`, escapes by default). `tierClass` returns `'tier-good' \| 'tier-warn' \| 'tier-bad'` (color via design tokens) — used for Shannon H, self-sufficiency, and the `.h-bar-fill` background. |
 | `deleteGroup(groupId)` | Deletes the group **and** its stations (with a `confirm()` if any exist); drops matching entries from `isochroneQueue`; `updateMap()` clears orphan layers. Allowed even on the last remaining group: `activeGroupId` becomes `null` and `addStation` will create a fresh group on the next map click (same behaviour as "Limpar estações"). |
@@ -242,13 +259,13 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `renderUncoveredBgris()` / `toggleUncoveredBgri(b, el)` / `clearUncoveredHighlight()` | Uncovered BGRI list in scenario tab; orange highlight (`#dd6b20`, weight 3) + `flyTo` |
 | `importGTFS(event)` | Wipes state (groups, stations, queue, jobs, overlap), creates new groups+stations, runs queue; uses overlay |
 | `saveProject()` / `loadProject(event)` | Single JSON file for full state; does NOT serialise isochrones or jobs. Format `version: '2.1'` (acrescenta `route` por grupo); v2.0 carrega normalmente sem rotas. |
-| `renderAllRoutes()` / `renderGroupRoute(g)` | (Re)constrói as polylines do `routePane` para cada grupo a partir de `g.route`; chamadas em `updateMap()`, mudança de cor e visibilidade. Cada geometria é desenhada como par casing (branco translúcido, peso `+4`) + linha colorida. Variantes recebem ainda 1–3 setas direcionais via `computeArrowAnchors`/`buildArrowMarker`. |
-| `startDrawTrunk(gid)` / `startDrawVariant(gid, dir)` / `finishRouteDrawing(geom)` / `cancelRouteDrawing()` | Fluxo de desenho com `L.Draw.Polyline` em modo livre (sem snap). Bloqueia `addStation` enquanto `isDrawingRoute` está ativo. |
-| `startRouteEdit(gid, kind, variantId?)` / `finishRouteEdit(save)` | Edição de vértices via `layer.editing.enable()`; guarda em `g.route.trunk` / `variants[i].geometry`. |
+| `renderAllRoutes()` / `renderGroupRoute(g)` | (Re)builds the `routePane` polylines for each group from `g.route`; called from `updateMap()`, on colour change and visibility change. Each geometry is drawn as a casing pair (translucent white, weight `+4`) plus the coloured line. Variants additionally receive 1–3 directional arrows via `computeArrowAnchors`/`buildArrowMarker`. |
+| `startDrawTrunk(gid)` / `startDrawVariant(gid, dir)` / `finishRouteDrawing(geom)` / `cancelRouteDrawing()` | Drawing flow with `L.Draw.Polyline` in free mode (no snap). Blocks `addStation` while `isDrawingRoute` is active. |
+| `startRouteEdit(gid, kind, variantId?)` / `finishRouteEdit(save)` | Vertex editing via `layer.editing.enable()`; saves to `g.route.trunk` / `variants[i].geometry`. |
 | `deleteRouteTrunk(gid)` / `deleteRouteVariant(gid, vid)` / `removeGroupRouteLayers(gid)` | Apagam geometria e layers do mapa. |
-| `getRouteLengthM(g)` / `lineLengthM(geom)` / `formatRouteDistance(m)` | Comprimento operacional = `length(trunk) × 2 + Σ length(variants)` (turf 6, em km → m). Apenas visual; não entra em população nem empregos. |
+| `getRouteLengthM(g)` / `lineLengthM(geom)` / `formatRouteDistance(m)` | Operational length = `length(trunk) × 2 + Σ length(variants)` (turf 6, km → m). Visual only; not part of population or jobs. |
 | `showStationsLoading(msg)` / `update…` / `showStationsLoadingError(msg)` / `hideStationsLoading()` | Stations-tab overlay; locks scroll; error state has retry button |
-| `captureMapToImage({bounds, width, height, stationMarkers, isochroneFeatures, routeLines, labelledDots})` | Off-screen Leaflet map → `html2canvas`; never touches the live map. `routeLines: [{feature, color, kind:'trunk'\|'variant'}]` desenha trunk (sólido peso 4) e variantes (tracejado `6,5` peso 3) entre as isócronas e os pins. |
+| `captureMapToImage({bounds, width, height, stationMarkers, isochroneFeatures, routeLines, labelledDots})` | Off-screen Leaflet map → `html2canvas`; never touches the live map. `routeLines: [{feature, color, kind:'trunk'\|'variant'}]` draws trunk (solid weight 4) and variants (dashed `6,5` weight 3) between the isochrones and the pins. |
 | `exportReport()` | Captures overview + uncovered maps; builds HTML report with KPIs, scenario, per-group tables, uncovered section |
 
 ---
@@ -260,7 +277,7 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `tilePane` (default) | 200 | OSM tiles |
 | `censusPane` (custom) | 200 | BGRI choropleth — always below isochrones |
 | `overlayPane` (default) | 400 | Isochrone polygons, urbanisation polygons |
-| `routePane` (custom) | 450 | Group routes (trunk + variants, c/ casing branco translúcido) — entre `overlayPane` (400) e `markerPane` (600) |
+| `routePane` (custom) | 450 | Group routes (trunk + variants, with translucent white casing) — between `overlayPane` (400) and `markerPane` (600) |
 | `markerPane` (default) | 600 | Station markers, urbanisation labels |
 
 > Census GeoJSON **must** use `pane: 'censusPane'`. Otherwise it stacks over isochrones.
@@ -280,6 +297,9 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
   coverage: 40,                   // integer 5–80 (%)
   diffuse: true,
   estimatedPop: Math.round(DENSITY_TYPES[densityType].residents_ha * area_ha * coverage / 100),
+  jobs_ha: 80,                    // jobs/ha (default comes from DENSITY_TYPES[densityType].jobs_ha, editable in the modal)
+  mix: { commerce: 0.5, services: 0.3, education_health: 0.1, culture_leisure: 0.1, industry: 0 }, // sums to 1
+  estimatedJobs: Math.round(jobs_ha * area_ha * coverage / 100),
   layers: [polygonLayer, labelMarker]   // index 1 must always be the label
 }
 ```
@@ -399,17 +419,17 @@ These rules have dedicated asserts — just run `pytest -q` to verify. If one fa
 | Topic | Decision |
 |---|---|
 | Census layer pane | Always `pane: 'censusPane'` (z=200). Bring isochrones to front after adding. |
-| Route pane | Group routes (trunk + variants) **must** use `pane: 'routePane'` (z=450, entre `overlayPane` 400 e `shadowPane` 500). Não pintar para `overlayPane` (esconder-se-iam atrás das isócronas) nem para `markerPane` (cobririam os pins). Cada rota é desenhada em duas camadas: casing branco translúcido (`weight + 4`, opacity 0.55) seguido da linha colorida — garante contraste sobre isócronas do mesmo grupo. |
-| Routes são puramente visuais | `group.route.{trunk,variants}` não entram em `calculatePopulation`, `calculateJobs` nem `computeOverlaps`. As paragens não têm de coincidir com a geometria — o pin define o catchment, a rota descreve só o percurso. |
-| Comprimento operacional da rota | `length(trunk) × 2 + Σ length(variants)` (`getRouteLengthM`). O tronco é bidirecional (×2); as variantes são unidirecionais (×1). |
-| Modo de desenho da rota | Apenas livre (`L.Draw.Polyline` sem snap). `addStation` é bloqueado enquanto `isDrawingRoute` está ativo. ESC cancela desenho ou edição em curso (antes de chamar `cancelEdit`). |
-| Versão do projeto JSON | `saveProject` escreve `version: '2.1'` com `route` por grupo; `loadProject` aceita também `2.0` (sem rotas) sem migração. Mexer no formato implica bumpar a versão e atualizar a migração. |
+| Route pane | Group routes (trunk + variants) **must** use `pane: 'routePane'` (z=450, between `overlayPane` 400 and `shadowPane` 500). Do not paint to `overlayPane` (would hide behind isochrones) or `markerPane` (would cover the pins). Each route is drawn in two layers: a translucent white casing (`weight + 4`, opacity 0.55) followed by the coloured line — ensures contrast over isochrones of the same group. |
+| Routes are visual only | `group.route.{trunk,variants}` do not enter `calculatePopulation`, `calculateJobs` or `computeOverlaps`. Stops do not need to coincide with the geometry — the pin defines the catchment, the route only describes the path. |
+| Operational route length | `length(trunk) × 2 + Σ length(variants)` (`getRouteLengthM`). The trunk is bidirectional (×2); variants are unidirectional (×1). |
+| Route drawing mode | Free mode only (`L.Draw.Polyline` without snap). `addStation` is blocked while `isDrawingRoute` is active. ESC cancels an ongoing draw or edit (before delegating to `cancelEdit`). |
+| Project JSON version | `saveProject` writes `version: '2.1'` with `route` per group; `loadProject` also accepts `2.0` (no routes) without migration. Changing the format implies bumping the version and updating the migration. |
 | No floors input | Formula is `residents_ha × area_ha × coverage/100`. |
 | Edit panel floats | `position:fixed; bottom:24px; right:24px`; opacity/transform toggle. ESC, ✕, empty-map click close it. |
 | No CSV in UI | Single JSON for save/load. Endpoints exist but are unused. |
 | Isochrone queue is the only flow | `enqueue → run → calculatePopulation(false) → calculateJobs() → hide/error`. Don't bypass. |
 | Per-station population (frontend) | Voronoi/proximity to the centroid. Individual cards must not sum 5+10 across stations. |
-| Jobs dedup (frontend, coverage card) | `osm_id` Map-based dedup; naive-sum fallback only when `osm_id` is missing. |
+| Jobs global total (frontend) | Read `jobsTotalCovered` (server's `total_jobs_covered`) directly in resume card, coverage card and report. **Never** sum `jobs_total` across stations or dedup POIs by `osm_id` in JS — the server already deduplicates POIs (via `unary_union` of the 5 min isochrones) and urbanisations (via the same union, prorated). Per-station card values stay untouched. |
 | GTFS replaces, not adds | `importGTFS` clears `stations`, `groups`, `activeGroupId`, queue, overlap, jobs first; calls `saveState()` before. |
 | Urbanisation label always at `layers[1]` | Use `setIcon(L.divIcon({…}))` to rename — don't remove/re-add. |
 | BGRI ID resolution order | `BGRI2021` → `SUBSECCAO` → `OBJECTID`. Both ends. |

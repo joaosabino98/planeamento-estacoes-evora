@@ -31,16 +31,29 @@ const ICON_EYE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" st
 const ICON_EYE_OFF = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a19.78 19.78 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 8 11 8a19.86 19.86 0 0 1-3.17 4.19M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
 
 // ==================== Density Types ====================
+// jobs_ha: empregos por hectare (defaults). mix: proporção das 5 categorias do
+// índice de mix de usos (commerce, services, education_health, culture_leisure,
+// industry); deve somar 1. Editáveis no modal de cada urbanização.
 const DENSITY_TYPES = [
-    { id: 0, label: 'Área desocupada',               residents_ha: 0,   color: '#e2e8f0' },
-    { id: 1, label: 'Zona industrial / serviços',    residents_ha: 5,   color: '#a0aec0' },
-    { id: 2, label: 'Vivenda unifamiliar',            residents_ha: 30,  color: '#c6f6d5' },
-    { id: 3, label: 'Moradia geminada (2 pisos)',     residents_ha: 70,  color: '#9ae6b4' },
-    { id: 4, label: 'Hab. coletiva baixa (3-4 pisos)',residents_ha: 150, color: '#f6e05e' },
-    { id: 5, label: 'Hab. coletiva média (4-6 pisos)',residents_ha: 250, color: '#ed8936' },
-    { id: 6, label: 'Uso misto (comércio + hab.)',    residents_ha: 200, color: '#fc8181' },
-    { id: 7, label: 'Alta densidade (6+ pisos)',      residents_ha: 400, color: '#e53e3e' },
+    { id: 0, label: 'Área desocupada',                residents_ha: 0,   jobs_ha: 0,
+      mix: { commerce: 0,    services: 0,    education_health: 0,    culture_leisure: 0,    industry: 0    }, color: '#e2e8f0' },
+    { id: 1, label: 'Zona industrial / serviços',     residents_ha: 5,   jobs_ha: 60,
+      mix: { commerce: 0.10, services: 0.20, education_health: 0,    culture_leisure: 0,    industry: 0.70 }, color: '#a0aec0' },
+    { id: 2, label: 'Vivenda unifamiliar',            residents_ha: 30,  jobs_ha: 2,
+      mix: { commerce: 0.50, services: 0.50, education_health: 0,    culture_leisure: 0,    industry: 0    }, color: '#c6f6d5' },
+    { id: 3, label: 'Moradia geminada (2 pisos)',     residents_ha: 70,  jobs_ha: 4,
+      mix: { commerce: 0.50, services: 0.50, education_health: 0,    culture_leisure: 0,    industry: 0    }, color: '#9ae6b4' },
+    { id: 4, label: 'Hab. coletiva baixa (3-4 pisos)',residents_ha: 150, jobs_ha: 8,
+      mix: { commerce: 0.40, services: 0.40, education_health: 0.20, culture_leisure: 0,    industry: 0    }, color: '#f6e05e' },
+    { id: 5, label: 'Hab. coletiva média (4-6 pisos)',residents_ha: 250, jobs_ha: 15,
+      mix: { commerce: 0.40, services: 0.30, education_health: 0.20, culture_leisure: 0.10, industry: 0    }, color: '#ed8936' },
+    { id: 6, label: 'Uso misto (comércio + hab.)',    residents_ha: 200, jobs_ha: 80,
+      mix: { commerce: 0.50, services: 0.30, education_health: 0.10, culture_leisure: 0.10, industry: 0    }, color: '#fc8181' },
+    { id: 7, label: 'Alta densidade (6+ pisos)',      residents_ha: 400, jobs_ha: 30,
+      mix: { commerce: 0.40, services: 0.40, education_health: 0.10, culture_leisure: 0.10, industry: 0    }, color: '#e53e3e' },
 ];
+
+const MIX_CATEGORIES = ['commerce', 'services', 'education_health', 'culture_leisure', 'industry'];
 
 // ==================== Application State ====================
 let map;
@@ -87,6 +100,7 @@ let editingUrbanizationId = null;
 
 // -- Jobs / Mix de Usos --
 let jobsData = {};            // { stationId: { jobs_total, jobs_breakdown, shannon_h, tod_classification, self_sufficiency, poi_count, low_coverage_warning, pois[] } }
+let jobsTotalCovered = 0;     // total de empregos cobertos pela rede (POIs deduplicados via união das isócronas 5 min + urbanizações prorated). Calculado server-side; consumido directamente pelo cartão-resumo, cartão de cobertura e relatório.
 let jobsPOILayer = null;      // Leaflet layer group for POI circle markers
 let jobsPOIVisible = false;
 let overlapData = {};         // { stationId: [{ withId, withName, areaFraction, sharedPop }] }
@@ -247,7 +261,12 @@ function initMap() {
     document.getElementById('btn-create-urbanization').addEventListener('click', confirmUrbanization);
     document.getElementById('btn-cancel-urbanization').addEventListener('click', cancelUrbanization);
     document.getElementById('urb-coverage').addEventListener('input', updateUrbanizationEstimate);
-    document.getElementById('urb-density-type').addEventListener('change', updateUrbanizationEstimate);
+    document.getElementById('urb-density-type').addEventListener('change', () => {
+        // Ao mudar de tipo, repõe os defaults de empregos/mix.
+        applyUrbJobFieldsFromType();
+        updateUrbanizationEstimate();
+    });
+    document.getElementById('urb-jobs-ha').addEventListener('input', updateUrbanizationEstimate);
 
     // Toggle do overlay "preenche polígono"
     const augToggle = document.getElementById('toggle-augmented-overlay');
@@ -1568,7 +1587,14 @@ async function calculateJobs() {
             isochrones: (s.isochrones && !s.isochroneError && Array.isArray(s.isochrones) && s.isochrones.length >= 2)
                 ? s.isochrones : null,
             population_5min: s.population_5min || 0,
-        }))
+        })),
+        new_urbanizations: newUrbanizations.map(u => ({
+            id: u.id,
+            geometry: u.geometry,
+            jobs_ha: (typeof u.jobs_ha === 'number') ? u.jobs_ha : (DENSITY_TYPES[u.densityType] || DENSITY_TYPES[2]).jobs_ha,
+            coverage: u.coverage,                                    // 0..100
+            mix: u.mix || (DENSITY_TYPES[u.densityType] || DENSITY_TYPES[2]).mix,
+        })),
     };
 
     let success = true;
@@ -1576,6 +1602,7 @@ async function calculateJobs() {
         const data = await fetchJSON('/api/jobs-in-isochrones', { body: payload });
         jobsData = {};
         (data.stations || []).forEach(s => { jobsData[String(s.id)] = s; });
+        jobsTotalCovered = data.total_jobs_covered || 0;
     } catch (e) {
         console.error('Erro ao calcular empregos:', e);
         success = false;
@@ -1602,17 +1629,10 @@ function updateJobsSummary() {
         return;
     }
 
-    // De-duplicate POIs across all stations by osm_id to avoid cross-station double-counting
-    const seen = new Map();
-    entries.forEach(e => {
-        (e.pois || []).forEach(p => {
-            if (p.osm_id && !seen.has(p.osm_id)) seen.set(p.osm_id, p.jobs || 0);
-        });
-    });
-    // Fallback to naive sum only if no osm_id data (e.g. stale cache)
-    const totalJobs = seen.size > 0
-        ? Array.from(seen.values()).reduce((s, v) => s + v, 0)
-        : entries.reduce((s, e) => s + (e.jobs_total || 0), 0);
+    // Total único, devolvido pelo servidor: POIs deduplicados pela união das
+    // isócronas 5 min (cada POI conta uma vez) + urbanizações prorated pela
+    // mesma união. Sem dedup local nem fallback.
+    const totalJobs = jobsTotalCovered;
 
     const avgH = entries.reduce((s, e) => s + (e.shannon_h || 0), 0) / entries.length;
     totalJobsEl.textContent = formatNumber(totalJobs);
@@ -1826,16 +1846,8 @@ function updateCoverageCard() {
         popBar.style.width = '0%';
     }
 
-    // Empregos: de-duplicate POIs por osm_id
-    const seen = new Map();
-    Object.values(jobsData).forEach(e => {
-        (e.pois || []).forEach(p => {
-            if (p.osm_id && !seen.has(p.osm_id)) seen.set(p.osm_id, p.jobs || 0);
-        });
-    });
-    const coveredJobs = seen.size > 0
-        ? Array.from(seen.values()).reduce((s, v) => s + v, 0)
-        : Object.values(jobsData).reduce((s, e) => s + (e.jobs_total || 0), 0);
+    // Empregos cobertos: total único deduplicado vindo do servidor.
+    const coveredJobs = jobsTotalCovered;
 
     if (coveredJobs > 0) {
         const pct = Math.min(100, (coveredJobs / CITY_TOTAL_JOBS) * 100);
@@ -2182,11 +2194,13 @@ function showUrbanizationModal(existing = null) {
         document.getElementById('urb-density-type').value = String(existing.densityType);
         document.getElementById('urb-coverage').value = existing.coverage;
         document.getElementById('urb-diffuse').checked = !!existing.diffuse;
+        applyUrbJobFieldsFromUrb(existing);
         if (titleEl) titleEl.textContent = 'Editar Urbanização';
         if (btnConfirm) btnConfirm.textContent = 'Guardar';
     } else {
         editingUrbanizationId = null;
         document.getElementById('urb-name').value = `Urbanização ${newUrbanizations.length + 1}`;
+        applyUrbJobFieldsFromType();
         if (titleEl) titleEl.textContent = 'Nova Urbanização';
         if (btnConfirm) btnConfirm.textContent = 'Criar';
     }
@@ -2194,17 +2208,67 @@ function showUrbanizationModal(existing = null) {
     updateUrbanizationEstimate();
 }
 
+// Preenche os campos de empregos/mix com os defaults do tipo de densidade selecionado.
+function applyUrbJobFieldsFromType() {
+    const typeIdx = parseInt(document.getElementById('urb-density-type').value);
+    const dt = DENSITY_TYPES[typeIdx] || DENSITY_TYPES[2];
+    const jhEl = document.getElementById('urb-jobs-ha');
+    const defEl = document.getElementById('urb-jobs-ha-default');
+    if (jhEl) jhEl.value = dt.jobs_ha;
+    if (defEl) defEl.textContent = `(default: ${dt.jobs_ha})`;
+    MIX_CATEGORIES.forEach(cat => {
+        const inp = document.getElementById('urb-mix-' + cat);
+        if (inp) inp.value = Math.round((dt.mix[cat] || 0) * 100);
+    });
+}
+
+// Preenche os campos de empregos/mix a partir de uma urb existente (para edição).
+function applyUrbJobFieldsFromUrb(urb) {
+    const dt = DENSITY_TYPES[urb.densityType] || DENSITY_TYPES[2];
+    const jhEl = document.getElementById('urb-jobs-ha');
+    const defEl = document.getElementById('urb-jobs-ha-default');
+    if (jhEl) jhEl.value = (typeof urb.jobs_ha === 'number') ? urb.jobs_ha : dt.jobs_ha;
+    if (defEl) defEl.textContent = `(default: ${dt.jobs_ha})`;
+    const mix = urb.mix || dt.mix;
+    MIX_CATEGORIES.forEach(cat => {
+        const inp = document.getElementById('urb-mix-' + cat);
+        if (inp) inp.value = Math.round((mix[cat] || 0) * 100);
+    });
+}
+
+// Lê os campos do modal e devolve { jobs_ha, mix } com mix normalizado a soma 1.
+function readUrbJobFields() {
+    const jhRaw = parseFloat(document.getElementById('urb-jobs-ha').value);
+    const jobs_ha = isFinite(jhRaw) && jhRaw >= 0 ? jhRaw : 0;
+    const raw = {};
+    let sum = 0;
+    MIX_CATEGORIES.forEach(cat => {
+        const v = parseFloat(document.getElementById('urb-mix-' + cat).value);
+        const safe = isFinite(v) && v > 0 ? v : 0;
+        raw[cat] = safe;
+        sum += safe;
+    });
+    const mix = {};
+    MIX_CATEGORIES.forEach(cat => {
+        mix[cat] = sum > 0 ? raw[cat] / sum : 0;
+    });
+    return { jobs_ha, mix };
+}
+
 function updateUrbanizationEstimate() {
     const coverageSlider = document.getElementById('urb-coverage');
     document.getElementById('urb-coverage-value').textContent = coverageSlider.value + '%';
 
+    const popEl = document.getElementById('urb-estimated-pop');
+    const jobsEl = document.getElementById('urb-estimated-jobs');
     if (!pendingUrbanizationGeometry) {
-        document.getElementById('urb-estimated-pop').textContent = '—';
+        popEl.textContent = '—';
+        if (jobsEl) jobsEl.textContent = '—';
         return;
     }
 
     const typeIdx = parseInt(document.getElementById('urb-density-type').value);
-    if (isNaN(typeIdx)) { document.getElementById('urb-estimated-pop').textContent = '—'; return; }
+    if (isNaN(typeIdx)) { popEl.textContent = '—'; if (jobsEl) jobsEl.textContent = '—'; return; }
 
     const dt = DENSITY_TYPES[typeIdx];
     const area = turf.area(pendingUrbanizationGeometry); // m²
@@ -2212,7 +2276,16 @@ function updateUrbanizationEstimate() {
     const coverage = parseInt(coverageSlider.value) / 100;
 
     const est = Math.round(dt.residents_ha * area_ha * coverage);
-    document.getElementById('urb-estimated-pop').textContent = formatNumber(Math.max(0, est));
+    popEl.textContent = formatNumber(Math.max(0, est));
+
+    // Empregos: usa os valores atuais dos campos (override do utilizador)
+    if (jobsEl) {
+        const jhInput = document.getElementById('urb-jobs-ha');
+        const jhRaw = jhInput ? parseFloat(jhInput.value) : NaN;
+        const jobs_ha = isFinite(jhRaw) && jhRaw >= 0 ? jhRaw : dt.jobs_ha;
+        const estJobs = Math.round(jobs_ha * area_ha * coverage);
+        jobsEl.textContent = formatNumber(Math.max(0, estJobs));
+    }
 }
 
 function confirmUrbanization() {
@@ -2232,6 +2305,8 @@ function confirmUrbanization() {
     const area = turf.area(pendingUrbanizationGeometry);
     const area_ha = area / 10000;
     const est = Math.round(dt.residents_ha * area_ha * (coverage / 100));
+    const { jobs_ha, mix } = readUrbJobFields();
+    const estJobs = Math.round(jobs_ha * area_ha * (coverage / 100));
 
     // If editing, remove the old layers from the map and from the global tracker
     if (isEditing) {
@@ -2248,6 +2323,9 @@ function confirmUrbanization() {
         coverage,
         diffuse,
         estimatedPop: Math.max(0, est),
+        jobs_ha,
+        mix,
+        estimatedJobs: Math.max(0, estJobs),
         layers: []
     };
 
@@ -2308,6 +2386,9 @@ function confirmUrbanization() {
     applyUrbanizationVisibility();
     refreshAugmentedIsochrones();
     updateScenarioSummary();
+    // Recalcular empregos: a urbanização altera o breakdown (POIs descartados
+    // dentro do polígono + empregos paramétricos prorated) e o Shannon H.
+    if (stations.length > 0) calculateJobs();
 }
 
 function cancelUrbanization() {
@@ -2327,6 +2408,7 @@ function removeUrbanization(urbId) {
     renderUrbanizations();
     refreshAugmentedIsochrones();
     updateScenarioSummary();
+    if (stations.length > 0) calculateJobs();
 }
 
 // Mostra/oculta as camadas das novas urbanizações sem alterar o estado
@@ -2701,7 +2783,8 @@ function saveProject() {
         densityOverrides,
         newUrbanizations: newUrbanizations.map(u => ({
             id: u.id, name: u.name, geometry: u.geometry, densityType: u.densityType,
-            coverage: u.coverage, diffuse: u.diffuse, estimatedPop: u.estimatedPop
+            coverage: u.coverage, diffuse: u.diffuse, estimatedPop: u.estimatedPop,
+            jobs_ha: u.jobs_ha, mix: u.mix, estimatedJobs: u.estimatedJobs
         }))
     };
 
@@ -2796,7 +2879,10 @@ async function loadProject(event) {
                 layers.push(labelMarker);
                 urbanizationLayers.push(labelMarker);
 
-                newUrbanizations.push({ ...u, layers });
+                // Backwards compat: projetos antigos não têm jobs_ha/mix → usa defaults do tipo.
+                const jobs_ha = (typeof u.jobs_ha === 'number') ? u.jobs_ha : dt.jobs_ha;
+                const mix = u.mix || dt.mix;
+                newUrbanizations.push({ ...u, jobs_ha, mix, layers });
             });
         }
 
@@ -3120,14 +3206,8 @@ async function exportReport() {
     // Pop: use union-based server totals (no cross-station double-counting)
     const totalPop5  = globalPopStats.total_population_5min  || stations.reduce((s, st) => s + (st.population_5min  || 0), 0);
     const totalPop10 = globalPopStats.total_population_10min || stations.reduce((s, st) => s + (st.population_10min || 0), 0);
-    // Jobs: de-duplicate POIs by osm_id
-    const _seenJ = new Map();
-    Object.values(jobsData).forEach(e => {
-        (e.pois || []).forEach(p => { if (p.osm_id && !_seenJ.has(p.osm_id)) _seenJ.set(p.osm_id, p.jobs || 0); });
-    });
-    const totalJobsAll = _seenJ.size > 0
-        ? Array.from(_seenJ.values()).reduce((s, v) => s + v, 0)
-        : Object.values(jobsData).reduce((s, j) => s + (j.jobs_total || 0), 0);
+    // Jobs: total único deduplicado vindo do servidor (POIs + urbanizações).
+    const totalJobsAll = jobsTotalCovered;
     const hValues = Object.values(jobsData).map(j => j.shannon_h).filter(h => h != null);
     const avgH = hValues.length > 0 ? (hValues.reduce((a, b) => a + b, 0) / hValues.length) : null;
 

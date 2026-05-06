@@ -247,6 +247,28 @@
                         Difundir densidade nos arredores
                     </label>
                 </div>
+                <details class="modal-advanced" id="urb-advanced">
+                    <summary>Empregos e mix de usos (avançado)</summary>
+                    <div class="modal-field">
+                        <label for="urb-jobs-ha">Empregos por hectare <span class="hint" id="urb-jobs-ha-default">(default: —)</span></label>
+                        <input type="number" id="urb-jobs-ha" min="0" step="1">
+                    </div>
+                    <div class="modal-field">
+                        <label>Mix de usos (%) — normalizado ao guardar</label>
+                        <div class="urb-mix-grid">
+                            <label class="urb-mix-row"><span>Comércio</span><input type="number" id="urb-mix-commerce" min="0" max="100" step="1"></label>
+                            <label class="urb-mix-row"><span>Serviços</span><input type="number" id="urb-mix-services" min="0" max="100" step="1"></label>
+                            <label class="urb-mix-row"><span>Educação/Saúde</span><input type="number" id="urb-mix-education_health" min="0" max="100" step="1"></label>
+                            <label class="urb-mix-row"><span>Cultura/Lazer</span><input type="number" id="urb-mix-culture_leisure" min="0" max="100" step="1"></label>
+                            <label class="urb-mix-row"><span>Indústria</span><input type="number" id="urb-mix-industry" min="0" max="100" step="1"></label>
+                        </div>
+                        <p class="hint">Os POIs do OSM dentro do polígono são descartados para evitar dupla contagem.</p>
+                    </div>
+                    <div class="modal-estimate">
+                        <span>Empregos estimados:</span>
+                        <span id="urb-estimated-jobs" class="highlight">—</span>
+                    </div>
+                </details>
                 <div class="modal-estimate">
                     <span>Pop. Estimada:</span>
                     <span id="urb-estimated-pop" class="highlight">—</span>

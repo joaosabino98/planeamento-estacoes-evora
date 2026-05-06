@@ -1571,6 +1571,79 @@ html, body {
     accent-color: var(--c-primary);
 }
 
+/* Secção avançada (empregos / mix de usos) — colapsável */
+.modal-advanced {
+    margin-bottom: 14px;
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    background: var(--c-bg-hover);
+}
+
+.modal-advanced > summary {
+    cursor: pointer;
+    font-size: var(--font-xs);
+    font-weight: var(--fw-bold);
+    color: var(--c-text-muted);
+    text-transform: uppercase;
+    letter-spacing: var(--ls-wide);
+    padding: 4px 0;
+    user-select: none;
+}
+
+.modal-advanced[open] > summary {
+    margin-bottom: 10px;
+}
+
+.modal-advanced .modal-field input[type="number"] {
+    width: 100%;
+    padding: 6px 8px;
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius-sm);
+    font-size: var(--font-base);
+    font-variant-numeric: tabular-nums;
+}
+
+.modal-advanced .hint {
+    font-size: var(--font-xxs);
+    color: var(--c-text-muted);
+    font-weight: var(--fw-regular);
+    text-transform: none;
+    letter-spacing: 0;
+    margin-top: 6px;
+}
+
+.urb-mix-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 10px;
+    margin-top: 4px;
+}
+
+.urb-mix-row {
+    display: flex !important;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 0 !important;
+    text-transform: none !important;
+    letter-spacing: 0 !important;
+    font-weight: var(--fw-regular) !important;
+    color: var(--c-text) !important;
+    font-size: var(--font-xs);
+}
+
+.urb-mix-row > span {
+    flex: 1;
+    min-width: 0;
+}
+
+.urb-mix-row > input[type="number"] {
+    width: 56px !important;
+    flex: none;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
 .modal-estimate {
     display: flex;
     justify-content: space-between;

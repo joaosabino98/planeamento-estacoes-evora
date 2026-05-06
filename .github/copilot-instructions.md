@@ -23,8 +23,10 @@ For the **detailed architectural reference** (API contracts, state shape, algori
 
 ## Language
 
-- All UI strings, comments and user-facing messages are in **European Portuguese**.
-- Code identifiers (variables, functions) are in **English**.
+- All UI strings, in-code comments and user-facing messages are in **European Portuguese**.
+- Code identifiers (variables, functions, file names) are in **English**.
+- The **`README.md`** is written in **European Portuguese** (it targets end users).
+- All files under **`.github/`** — including `copilot-instructions.md` and every `*.instructions.md`, `*.prompt.md`, `SKILL.md`, `AGENTS.md` and YAML frontmatter — are written in **English**, except for technical proper nouns (e.g. `Mobilidade e Território`, `Évora`, `Cenário Urbano` when referring to the UI tab) and quoted UI strings shown to the user. Mixing languages in instruction files makes them harder to scan and is treated as a regression.
 - When chatting with the user, respond in Portuguese unless they switch.
 
 ## Run locally
@@ -64,8 +66,8 @@ Most **backend** rules are already guarded by tests in `tests/` — just run `py
 The list below covers only decisions **without automated coverage** (frontend, CSS, infra, UI/product). See [`architecture.instructions.md`](./instructions/architecture.instructions.md) for full reasoning.
 
 1. **Census layer pane** — add the BGRI GeoJSON to `censusPane` (z-index 200), never to `overlayPane`. After adding, call `isochroneLayers.forEach(l => l.bringToFront())`.
-1.1. **Route pane** — desenhar percursos de grupo (`group.route.{trunk,variants}`) sempre em `routePane` (z-index 450, entre `overlayPane` 400 e `shadowPane` 500). Não cair para `overlayPane` (esconder-se-iam atrás das isócronas) nem `markerPane` (cobririam os pins). Cada rota é pintada com casing branco translúcido (`weight + 4`, opacity 0.55) seguido da linha colorida.
-1.2. **As rotas são apenas visuais** — `group.route` não entra em `calculatePopulation()`, `calculateJobs()` nem `computeOverlaps()`. As paragens não têm de tocar a geometria do percurso (o pin define o catchment; a rota descreve o trajeto). Comprimento operacional = `length(trunk) × 2 + Σ length(variants)`.
+1.1. **Route pane** — group routes (`group.route.{trunk,variants}`) must always be drawn on `routePane` (z-index 450, between `overlayPane` 400 and `shadowPane` 500). Do not fall back to `overlayPane` (they would hide behind isochrones) or `markerPane` (they would cover the pins). Each route is rendered as a translucent white casing (`weight + 4`, opacity 0.55) followed by the coloured line.
+1.2. **Routes are visual only** — `group.route` does not enter `calculatePopulation()`, `calculateJobs()` or `computeOverlaps()`. Stops do not have to touch the route geometry (the pin defines the catchment; the route only describes the path). Operational length = `length(trunk) × 2 + Σ length(variants)`.
 2. **No floors slider** — urbanisation population is exactly `residents_ha × area_ha × (coverage / 100)`. Do not reintroduce a floors factor.
 3. **Edit panel is floating** (`position:fixed`), not inside the sidebar. Visibility is toggled via `opacity`/`transform`, not `display:none`. Closes on ESC, ✕, or empty-map click.
 4. **No CSV import/export** — the project is a single JSON file (`saveProject`/`loadProject`). Do not reintroduce CSV buttons.
@@ -75,7 +77,7 @@ The list below covers only decisions **without automated coverage** (frontend, C
 8. **Server runs with `debug=False` by default** — gated by `FLASK_DEBUG=1`. Do not reintroduce an unconditional `app.run(debug=True)` (it exposes the Werkzeug debugger).
 9. **`toast(msg, type)` for non-blocking notifications** — `alert(...)` is reserved for hard errors. Prefer toast for confirmations, GTFS results, recalc done, etc.
 10. **Globals/per-station population** — per-station uses Voronoi/proximity to the centroid; globals and per-group use union. Aggregated totals (coverage card, report, `groups[]`) **never** sum `population_5min + population_10min` per station. *(The backend side is covered by `tests/test_population.py`; the per-station calculation in the frontend — e.g. individual cards — is not, hence it stays listed.)*
-11. **"Preenche polígono" speed constant has to match in both ends** — `WALK_SPEED_M_PER_MIN` no servidor (`server.py`) e `WALK_SPEED_KM_PER_MIN` no cliente (`static/app.js`) representam a mesma velocidade pedonal (5 km/h ≈ 83.4 m/min, derivada de `RADIUS_5MIN_M / 5`). Mexer numa sem mexer na outra introduz diferenças visíveis entre o que o utilizador vê no mapa e os números mostrados nos cartões.
+11. **"Fill polygon" walking speed must match on both ends** — `WALK_SPEED_M_PER_MIN` on the server (`server.py`) and `WALK_SPEED_KM_PER_MIN` on the client (`static/app.js`) represent the same pedestrian speed (5 km/h ≈ 83.4 m/min, derived from `RADIUS_5MIN_M / 5`). Changing one without the other introduces visible discrepancies between what the user sees on the map and the numbers shown in the cards.
 
 ## Keep these instructions accurate
 
