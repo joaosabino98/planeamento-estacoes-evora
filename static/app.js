@@ -483,17 +483,83 @@ function buildRoutePair(geometry, group, isVariant) {
     return { casing, line, baseWeight, casingWeight };
 }
 
+// Calcula posições e bearings ao longo de uma LineString para colocar setas
+// direcionais. Devolve [{ lat, lng, bearing }] com 1–3 marcas espaçadas
+// regularmente. Pequenas variantes (<120 m) ficam sem seta para não poluir.
+function computeArrowAnchors(geometry) {
+    if (!geometry || geometry.type !== 'LineString') return [];
+    let lengthKm = 0;
+    try {
+        lengthKm = turf.length({ type: 'Feature', geometry, properties: {} }, { units: 'kilometers' });
+    } catch { return []; }
+    const lengthM = lengthKm * 1000;
+    if (lengthM < 120) return [];
+
+    // 1 seta para variantes curtas (<400 m), até 3 setas em variantes longas.
+    let count = 1;
+    if (lengthM >= 800) count = 3;
+    else if (lengthM >= 400) count = 2;
+
+    // Distribui as setas em proporções [0.5] / [0.33, 0.66] / [0.25, 0.5, 0.75].
+    const fractions = count === 1 ? [0.5] : (count === 2 ? [1/3, 2/3] : [0.25, 0.5, 0.75]);
+    const eps = 0.005; // ~0.5% adiante para o bearing (evita zero quando o ponto cai num vértice)
+    const anchors = [];
+    fractions.forEach(f => {
+        try {
+            const ptKm = f * lengthKm;
+            const ahead = Math.min(lengthKm, ptKm + Math.max(eps * lengthKm, 0.005));
+            const a = turf.along({ type: 'Feature', geometry, properties: {} }, ptKm,   { units: 'kilometers' });
+            const b = turf.along({ type: 'Feature', geometry, properties: {} }, ahead,  { units: 'kilometers' });
+            const bearing = turf.bearing(a, b);
+            anchors.push({
+                lat: a.geometry.coordinates[1],
+                lng: a.geometry.coordinates[0],
+                bearing,
+            });
+        } catch {}
+    });
+    return anchors;
+}
+
+function buildArrowMarker({ lat, lng, bearing }, color, opts = {}) {
+    // Triângulo SVG a apontar para cima (norte), rotado pelo bearing geográfico.
+    // turf.bearing devolve graus com 0=norte, 90=este — coincide com CSS rotate.
+    // A seta tem um halo branco para se destacar quando atravessa a linha
+    // tracejada da variante ou as isócronas.
+    const size = 18;
+    const html = `
+        <div style="transform: rotate(${bearing}deg); width: ${size}px; height: ${size}px; display:flex; align-items:center; justify-content:center;">
+            <svg viewBox="0 0 16 16" width="${size}" height="${size}" style="display:block; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,0.35));">
+                <path d="M8 1 L14.5 14.5 L8 11 L1.5 14.5 Z"
+                      fill="${color}" stroke="#ffffff" stroke-width="1.6" stroke-linejoin="round" />
+            </svg>
+        </div>`;
+    const markerOpts = {
+        interactive: false,
+        keyboard: false,
+        icon: L.divIcon({
+            className: '',
+            html,
+            iconSize: [size, size],
+            iconAnchor: [size / 2, size / 2],
+        }),
+    };
+    if (opts.pane) markerOpts.pane = opts.pane;
+    return L.marker([lat, lng], markerOpts);
+}
+
 function renderGroupRoute(group) {
     if (!group) return;
     ensureRouteShape(group);
     const tracker = groupRouteLayers[group.id] || {
         trunkLayer: null, trunkCasing: null,
-        variantLayers: {}, variantCasings: {}
+        variantLayers: {}, variantCasings: {}, variantArrows: {}
     };
     groupRouteLayers[group.id] = tracker;
-    // Migrate older tracker shape (sem casings) sem partir nada
-    if (!('trunkCasing' in tracker))   tracker.trunkCasing = null;
+    // Migrate older tracker shape (sem casings/setas) sem partir nada
+    if (!('trunkCasing' in tracker))    tracker.trunkCasing = null;
     if (!('variantCasings' in tracker)) tracker.variantCasings = {};
+    if (!('variantArrows' in tracker))  tracker.variantArrows = {};
 
     const visible = group.visible !== false;
 
@@ -514,8 +580,12 @@ function renderGroupRoute(group) {
     Object.keys(tracker.variantCasings).forEach(vid => {
         try { map.removeLayer(tracker.variantCasings[vid]); } catch {}
     });
+    Object.keys(tracker.variantArrows).forEach(vid => {
+        (tracker.variantArrows[vid] || []).forEach(m => { try { map.removeLayer(m); } catch {} });
+    });
     tracker.variantLayers = {};
     tracker.variantCasings = {};
+    tracker.variantArrows = {};
     if (visible) {
         (group.route.variants || []).forEach(v => {
             if (!v.geometry) return;
@@ -524,6 +594,16 @@ function renderGroupRoute(group) {
             line.bindTooltip(`${escapeHtml(group.name)} — variante (${dirLabel})`, { sticky: true });
             tracker.variantLayers[v.id]  = line;
             tracker.variantCasings[v.id] = casing;
+
+            // Setas direcionais ao longo da variante (a apontar no sentido de
+            // desenho — o utilizador desenha cada variante na direção real
+            // de circulação que ela representa).
+            const arrows = [];
+            computeArrowAnchors(v.geometry).forEach(anchor => {
+                const marker = buildArrowMarker(anchor, group.color, { pane: 'routePane' }).addTo(map);
+                arrows.push(marker);
+            });
+            tracker.variantArrows[v.id] = arrows;
         });
     }
 
@@ -550,6 +630,7 @@ function removeGroupRouteLayers(groupId) {
     if (tracker.trunkCasing) { try { map.removeLayer(tracker.trunkCasing); } catch {} }
     Object.values(tracker.variantLayers  || {}).forEach(l => { try { map.removeLayer(l); } catch {} });
     Object.values(tracker.variantCasings || {}).forEach(l => { try { map.removeLayer(l); } catch {} });
+    Object.values(tracker.variantArrows  || {}).forEach(arr => (arr || []).forEach(m => { try { map.removeLayer(m); } catch {} }));
     delete groupRouteLayers[groupId];
 }
 
@@ -2875,6 +2956,12 @@ async function captureMapToImage({ bounds, width, height, stationMarkers = [], i
                         lineJoin: 'round',
                     },
                 }).addTo(offMap);
+                // Setas direcionais nas variantes (igual ao mapa principal)
+                if (isVariant && feature.geometry) {
+                    computeArrowAnchors(feature.geometry).forEach(anchor => {
+                        buildArrowMarker(anchor, color || '#667eea').addTo(offMap);
+                    });
+                }
             } catch (_) {}
         });
 

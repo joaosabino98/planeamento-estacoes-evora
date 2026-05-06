@@ -241,7 +241,7 @@ historyStack[]; historyIndex; const MAX_HISTORY = 50
 | `renderUncoveredBgris()` / `toggleUncoveredBgri(b, el)` / `clearUncoveredHighlight()` | Uncovered BGRI list in scenario tab; orange highlight (`#dd6b20`, weight 3) + `flyTo` |
 | `importGTFS(event)` | Wipes state (groups, stations, queue, jobs, overlap), creates new groups+stations, runs queue; uses overlay |
 | `saveProject()` / `loadProject(event)` | Single JSON file for full state; does NOT serialise isochrones or jobs. Format `version: '2.1'` (acrescenta `route` por grupo); v2.0 carrega normalmente sem rotas. |
-| `renderAllRoutes()` / `renderGroupRoute(g)` | (Re)constrói as polylines do `routePane` para cada grupo a partir de `g.route`; chamadas em `updateMap()`, mudança de cor e visibilidade. |
+| `renderAllRoutes()` / `renderGroupRoute(g)` | (Re)constrói as polylines do `routePane` para cada grupo a partir de `g.route`; chamadas em `updateMap()`, mudança de cor e visibilidade. Cada geometria é desenhada como par casing (branco translúcido, peso `+4`) + linha colorida. Variantes recebem ainda 1–3 setas direcionais via `computeArrowAnchors`/`buildArrowMarker`. |
 | `startDrawTrunk(gid)` / `startDrawVariant(gid, dir)` / `finishRouteDrawing(geom)` / `cancelRouteDrawing()` | Fluxo de desenho com `L.Draw.Polyline` em modo livre (sem snap). Bloqueia `addStation` enquanto `isDrawingRoute` está ativo. |
 | `startRouteEdit(gid, kind, variantId?)` / `finishRouteEdit(save)` | Edição de vértices via `layer.editing.enable()`; guarda em `g.route.trunk` / `variants[i].geometry`. |
 | `deleteRouteTrunk(gid)` / `deleteRouteVariant(gid, vid)` / `removeGroupRouteLayers(gid)` | Apagam geometria e layers do mapa. |
