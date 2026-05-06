@@ -202,7 +202,9 @@ Todas são opcionais (com defaults sensatos), definidas em `.env` ou no shell an
 ├── server_lib/             # Lógica pura reutilizável
 │   ├── jobs_taxonomy.py    # OSM → categoria + estimativa de emprego
 │   ├── shannon.py          # Índice de mistura de usos (entropia normalizada)
-│   └── population.py       # Cálculo de população em isócronas (com urbanizações)
+│   ├── population.py       # Cálculo de população em isócronas (com urbanizações)
+│   ├── jobs.py             # Cálculo de empregos (Overpass + urbanizações)
+│   └── gtfs.py             # Parser GTFS (paragens agrupadas por linha dominante)
 ├── process_data.py         # Pré-processamento dos dados BGRI
 ├── requirements.txt
 ├── requirements-dev.txt    # pytest + mocks

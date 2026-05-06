@@ -14,9 +14,9 @@ Detailed technical reference. Read [`copilot-instructions.md`](../copilot-instru
 `server_lib/` is a pure Python package — no Flask, no globals, no I/O beyond Shapely/GeoPandas:
 - `jobs_taxonomy.py` — `JOBS_PER_HA` and `classify_poi_tags(el_type, tags)` (OSM tag → category + employment estimate).
 - `shannon.py` — `compute_shannon_h(residents, breakdown)` (normalised entropy + TOD classification).
-- `population.py` — `WALK_SPEED_M_PER_MIN`, `AUGMENT_METRIC_CRS`, `_fill_polygon_for_station`, `_augment_buffers_with_urbanizations`, `_assign_population_voronoi`, and `compute_population_response(payload, *, census_data, pop_column, radius_5min_m, radius_10min_m, uncovered_min_pop, uncovered_limit)` — the orchestrator that the `/api/population-in-isochrones` route delegates to.
-
-The `/api/jobs-in-isochrones` and `/api/import-gtfs` route handlers still live inline in `server.py` — they were left there in this split because they touch the Overpass cache and `_request_with_backoff` directly.
+- `population.py` — `WALK_SPEED_M_PER_MIN`, `AUGMENT_METRIC_CRS`, `_fill_polygon_for_station`, `_augment_buffers_with_urbanizations`, `_assign_population_voronoi`, and `compute_population_response(payload, *, census_data, pop_column, radius_5min_m, radius_10min_m, uncovered_min_pop, uncovered_limit)` — the orchestrator that `/api/population-in-isochrones` delegates to.
+- `jobs.py` — Overpass query/parse + `compute_jobs_response(payload, *, request_with_backoff, overpass_cache, overpass_ttl_s, radius_5min_m, meters_per_degree, active_population_ratio)`. Network and cache are **injected**, not imported, so `mocker.patch("server._request_with_backoff", ...)` keeps working: the route handler resolves the symbol on the `server` module at call time and forwards it.
+- `gtfs.py` — `parse_gtfs_zip(file_bytes)` returning `(payload, status_code)`. The route handler only reads the upload and `jsonify`s the result.
 
 ---
 
