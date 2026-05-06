@@ -1,5 +1,5 @@
 ---
-description: "Use when modifying server.py, server_lib/**, static/app.js, static/index.html, static/style.css, or process_data.py — full architectural reference for the Mobilidade e Território (Évora) TOD planning tool: API contracts, frontend state, population/jobs/isochrone algorithms, Leaflet pane order, design tokens, and known regressions to avoid."
+description: "Use when modifying server.py, server_lib/**, static/js/**, static/index.html, static/style.css, or process_data.py — full architectural reference for the Mobilidade e Território (Évora) TOD planning tool: API contracts, frontend state, population/jobs/isochrone algorithms, Leaflet pane order, design tokens, and known regressions to avoid."
 applyTo: "server.py, server_lib/**, static/**, process_data.py"
 ---
 
@@ -181,7 +181,22 @@ def _isochrone_cache_key(lat, lng): return f"{round(float(lat), 5)},{round(float
 
 ---
 
-## Frontend state (`app.js` globals)
+## Frontend layout (`static/js/`)
+
+The client is split across 6 files loaded sequentially as plain `<script>` tags (no ES modules, no build step). All variables and functions share the global scope; the split is purely organisational.
+
+| File | Responsibility |
+|---|---|
+| `core.js` | Constants (`EVORA_CENTER`, `GROUP_COLORS`, `DENSITY_TYPES`, `MIX_CATEGORIES`, `ICON_*`), all top-level state (`groups`, `stations`, `jobsData`, `historyStack`, queues, etc.) and the shared `fetchJSON` helper. |
+| `map.js` | `initMap` (panes, tile layer, draw control), `switchTab`, group CRUD and visibility, route drawing/editing for trunks and variants, color picker. |
+| `stations.js` | History/undo/redo, station CRUD, `updateMap`/`createStationMarker`, isochrone queue (`runIsochroneQueue`, `createIsochrones`, `drawCachedIsochrones`), augmented "fill polygon" overlay (`fillPolygonForStation`, `refreshAugmentedIsochrones`). |
+| `analytics.js` | `calculatePopulation`, `calculateJobs`, `updateJobsSummary`, `renderPOILayer`/`togglePOILayer`, `computeOverlaps`, `importGTFS`. |
+| `ui.js` | Sidebar rendering (`updateSidebar`, `updateCoverageCard`, `renderStationCard`, `renderJobsSection`, `renderOverlapBadges`, `renderGroupStats`), census layer (`loadCensusLayer`, `getCensusStyle`, `selectCensusFeature`, density edit panel), urbanisations workflow (draw, modal, confirm, render, rename, remove), scenario tab (`updateScenarioSummary`, `recalculateCatchment`, uncovered BGRIs, `resetScenario`), density legend. |
+| `main.js` | Project save/load (`saveProject`/`loadProject`), helpers (`formatNumber`, `escapeHtml`, `statRow`, `tierClass`), `toast`, `captureMapToImage`, `exportReport`, `DOMContentLoaded` bootstrap, `window.*` exports for inline `onclick=` handlers. |
+
+Load order is fixed in `index.html`: `core.js` (state) → `map.js` → `stations.js` → `analytics.js` → `ui.js` → `main.js` (bootstrap). Functions defined later may reference earlier ones at call time (after DOM is ready), but module-level execution must respect the order.
+
+## Frontend state (`core.js` globals)
 
 ```js
 // Map

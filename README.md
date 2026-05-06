@@ -196,7 +196,13 @@ Todas são opcionais (com defaults sensatos), definidas em `.env` ou no shell an
 ├── static/
 │   ├── index.html          # Estrutura da interface
 │   ├── style.css           # Estilos
-│   └── app.js              # Lógica do cliente (Leaflet, estado, API calls)
+│   └── js/                 # Lógica do cliente (Leaflet, estado, API calls)
+│       ├── core.js         # Constantes, estado global, fetchJSON
+│       ├── map.js          # Inicialização do mapa, grupos, rotas
+│       ├── stations.js     # Paragens, undo/redo, isócronas
+│       ├── analytics.js    # População, empregos, sobreposições, GTFS
+│       ├── ui.js           # Sidebar, BGRI, urbanizações, cenário
+│       └── main.js         # Save/load, relatório, bootstrap
 ├── tests/                  # Suite pytest (backend)
 ├── server.py               # API Flask (rotas, caches ORS/Overpass, networking)
 ├── server_lib/             # Lógica pura reutilizável

@@ -329,7 +329,19 @@
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
     <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
-    <script src="/static/app.js"></script>
+
+    <!--
+      Application code is split into several files that share the global scope
+      (no ES modules yet, see .github/copilot-instructions.md). Load order
+      matters: core (constants + state) must come first; main (bootstrap with
+      DOMContentLoaded handler) must come last.
+    -->
+    <script src="/static/js/core.js"></script>
+    <script src="/static/js/map.js"></script>
+    <script src="/static/js/stations.js"></script>
+    <script src="/static/js/analytics.js"></script>
+    <script src="/static/js/ui.js"></script>
+    <script src="/static/js/main.js"></script>
 </body>
 </html>
 

@@ -12,7 +12,7 @@ Web tool for **Transit-Oriented Development planning in Évora**. A Flask + GeoP
 |---|---|
 | `server.py` | Flask app (~430 lines): app instance, ISOCHRONE/Overpass caches, ORS networking with backoff, route handlers — thin orchestration on top of `server_lib/` |
 | `server_lib/` | Pure Python package: `jobs_taxonomy.py` (OSM→category mapping + JOBS_PER_HA), `shannon.py` (compute_shannon_h), `population.py` (WALK_SPEED_M_PER_MIN, fill-polygon heuristic, Voronoi assignment, `compute_population_response`), `jobs.py` (Overpass query + `compute_jobs_response` with injected `request_with_backoff`/`overpass_cache`), `gtfs.py` (`parse_gtfs_zip` returning payload+status) |
-| `static/app.js` | Client logic (~2 500 lines): map, state, all features |
+| `static/js/` | Client logic split across 6 files (~3 500 lines total) loaded sequentially — **shared global scope, no ES modules**: `core.js` (constants + state + `fetchJSON`), `map.js` (map init, tabs, groups + routes drawing, color picker), `stations.js` (history/undo, station CRUD, marker rendering, isochrone queue, augmented overlay), `analytics.js` (population, jobs, overlaps, GTFS import), `ui.js` (sidebar, station/group cards, census layer, urbanisations, scenario summary, density legend), `main.js` (project save/load, helpers, toast, `captureMapToImage`, `exportReport`, `DOMContentLoaded` bootstrap, `window.*` exports). Load order is fixed in `index.html` — `core.js` first, `main.js` last. |
 | `static/index.html` / `style.css` | UI structure and design system |
 | `process_data.py` | One-shot: BGRI `.gpkg` → `data/census_data.geojson` + metadata |
 | `tests/` | pytest suite (backend only) — run with `pytest -q` |
@@ -78,7 +78,7 @@ The list below covers only decisions **without automated coverage** (frontend, C
 8. **Server runs with `debug=False` by default** — gated by `FLASK_DEBUG=1`. Do not reintroduce an unconditional `app.run(debug=True)` (it exposes the Werkzeug debugger).
 9. **`toast(msg, type)` for non-blocking notifications** — `alert(...)` is reserved for hard errors. Prefer toast for confirmations, GTFS results, recalc done, etc.
 10. **Globals/per-station population** — per-station uses Voronoi/proximity to the centroid; globals and per-group use union. Aggregated totals (coverage card, report, `groups[]`) **never** sum `population_5min + population_10min` per station. *(The backend side is covered by `tests/test_population.py`; the per-station calculation in the frontend — e.g. individual cards — is not, hence it stays listed.)*
-11. **"Fill polygon" walking speed must match on both ends** — `WALK_SPEED_M_PER_MIN` on the server (`server.py`) and `WALK_SPEED_KM_PER_MIN` on the client (`static/app.js`) represent the same pedestrian speed (5 km/h ≈ 83.4 m/min, derived from `RADIUS_5MIN_M / 5`). Changing one without the other introduces visible discrepancies between what the user sees on the map and the numbers shown in the cards.
+11. **"Fill polygon" walking speed must match on both ends** — `WALK_SPEED_M_PER_MIN` on the server (`server.py`) and `WALK_SPEED_KM_PER_MIN` on the client (`static/js/stations.js`) represent the same pedestrian speed (5 km/h ≈ 83.4 m/min, derived from `RADIUS_5MIN_M / 5`). Changing one without the other introduces visible discrepancies between what the user sees on the map and the numbers shown in the cards.
 
 ## Keep these instructions accurate
 
@@ -86,7 +86,7 @@ The list below covers only decisions **without automated coverage** (frontend, C
 
 Trigger an update when any of the following change:
 - A Flask route is added, removed, or its payload changes
-- A top-level state variable in `app.js` is added, renamed or changes shape
+- A top-level state variable in `static/js/core.js` is added, renamed or changes shape
 - A function listed in the architecture file is added, removed or renamed
 - The population, jobs, Shannon H, or coverage algorithm changes
 - A new file or folder is added at the top level
