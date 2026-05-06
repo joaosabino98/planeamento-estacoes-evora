@@ -75,6 +75,7 @@ let censusLayer = null;          // Leaflet GeoJSON layer
 let densityOverrides = {};       // { bgriId: { densityType: <int>, populationOverride: <number> } }
 let newUrbanizations = [];       // [{ id, name, geometry, densityType, coverage, diffuse, estimatedPop, layers[] }]
 let urbanizationLayers = [];     // all Leaflet layers for urbanizations
+let showNewUrbanizations = true; // sincronizado com o toggle "Mostrar novas urbanizações"
 let selectedCensusFeature = null;
 let selectedUncoveredLayer  = null;  // Leaflet layer currently highlighted as uncovered BGRI
 let selectedUncoveredBgriId = null;  // id of the highlighted uncovered BGRI
@@ -254,6 +255,15 @@ function initMap() {
         augToggle.addEventListener('change', (e) => {
             showAugmentedOverlay = !!e.target.checked;
             refreshAugmentedIsochrones();
+        });
+    }
+
+    // Toggle visibilidade das novas urbanizações no mapa (não afeta cálculos)
+    const urbToggle = document.getElementById('toggle-new-urbanizations');
+    if (urbToggle) {
+        urbToggle.addEventListener('change', (e) => {
+            showNewUrbanizations = !!e.target.checked;
+            applyUrbanizationVisibility();
         });
     }
 
@@ -2295,6 +2305,7 @@ function confirmUrbanization() {
     editingUrbanizationId = null;
     document.getElementById('urbanization-modal').classList.add('hidden');
     renderUrbanizations();
+    applyUrbanizationVisibility();
     refreshAugmentedIsochrones();
     updateScenarioSummary();
 }
@@ -2316,6 +2327,21 @@ function removeUrbanization(urbId) {
     renderUrbanizations();
     refreshAugmentedIsochrones();
     updateScenarioSummary();
+}
+
+// Mostra/oculta as camadas das novas urbanizações sem alterar o estado
+// (newUrbanizations[]). Os cálculos de população, empregos e overlays "preenche
+// polígono" continuam a usar os dados — só a visibilidade no mapa muda.
+function applyUrbanizationVisibility() {
+    urbanizationLayers.forEach(l => {
+        try {
+            if (showNewUrbanizations) {
+                if (!map.hasLayer(l)) l.addTo(map);
+            } else {
+                if (map.hasLayer(l)) map.removeLayer(l);
+            }
+        } catch {}
+    });
 }
 
 function renderUrbanizations() {
@@ -2787,6 +2813,7 @@ async function loadProject(event) {
         updateMap();
         updateSidebar();
         renderUrbanizations();
+        applyUrbanizationVisibility();
         updateScenarioSummary();
         saveState();
         // No stations to enqueue → refresh global totals directly so the coverage card reflects density/urbanisation changes

@@ -172,6 +172,7 @@ stations[]                // [{ id, lat, lng, groupId, name (GTFS|null),
 stationMarkers[]; isochroneLayers[]; stationIsochroneLayers{ [stationId]: [layer, layer] }
 augmentedIsochroneLayers{ [stationId]: [layer5, layer10] }   // overlay "preenche polígono"
 showAugmentedOverlay = true                                  // toggle no painel "Cenário Urbano"
+showNewUrbanizations = true                                  // toggle de visibilidade das novas urbanizações (apenas visual)
 const WALK_SPEED_KM_PER_MIN = 0.0834                         // espelha server.WALK_SPEED_M_PER_MIN
 
 // Routes (per‑group)
