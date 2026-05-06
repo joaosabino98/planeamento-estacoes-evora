@@ -1,11 +1,22 @@
 ---
-description: "Use when modifying server.py, static/app.js, static/index.html, static/style.css, or process_data.py — full architectural reference for the Mobilidade e Território (Évora) TOD planning tool: API contracts, frontend state, population/jobs/isochrone algorithms, Leaflet pane order, design tokens, and known regressions to avoid."
-applyTo: "server.py, static/**, process_data.py"
+description: "Use when modifying server.py, server_lib/**, static/app.js, static/index.html, static/style.css, or process_data.py — full architectural reference for the Mobilidade e Território (Évora) TOD planning tool: API contracts, frontend state, population/jobs/isochrone algorithms, Leaflet pane order, design tokens, and known regressions to avoid."
+applyTo: "server.py, server_lib/**, static/**, process_data.py"
 ---
 
 # Architecture reference
 
 Detailed technical reference. Read [`copilot-instructions.md`](../copilot-instructions.md) first for the project overview and high-level rules. **Update this file whenever the items it documents change.**
+
+## Backend layout
+
+`server.py` is the runnable Flask entry point. It owns the app instance, CORS, ORS networking with backoff (`_request_with_backoff`), the in-memory caches (`ISOCHRONE_CACHE` with file persistence, `_OVERPASS_CACHE`), the census loader, and all route handlers. It re-exports the pure-logic helpers from `server_lib/` so existing imports (`from server import ...`) and `mocker.patch("server._request_with_backoff", ...)` keep working.
+
+`server_lib/` is a pure Python package — no Flask, no globals, no I/O beyond Shapely/GeoPandas:
+- `jobs_taxonomy.py` — `JOBS_PER_HA` and `classify_poi_tags(el_type, tags)` (OSM tag → category + employment estimate).
+- `shannon.py` — `compute_shannon_h(residents, breakdown)` (normalised entropy + TOD classification).
+- `population.py` — `WALK_SPEED_M_PER_MIN`, `AUGMENT_METRIC_CRS`, `_fill_polygon_for_station`, `_augment_buffers_with_urbanizations`, `_assign_population_voronoi`, and `compute_population_response(payload, *, census_data, pop_column, radius_5min_m, radius_10min_m, uncovered_min_pop, uncovered_limit)` — the orchestrator that the `/api/population-in-isochrones` route delegates to.
+
+The `/api/jobs-in-isochrones` and `/api/import-gtfs` route handlers still live inline in `server.py` — they were left there in this split because they touch the Overpass cache and `_request_with_backoff` directly.
 
 ---
 

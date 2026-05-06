@@ -10,7 +10,8 @@ Web tool for **Transit-Oriented Development planning in Évora**. A Flask + GeoP
 
 | Path | Role |
 |---|---|
-| `server.py` | Flask API (~1 200 lines): isochrones, population, jobs, GTFS, exports |
+| `server.py` | Flask app (~890 lines): app instance, ISOCHRONE/Overpass caches, ORS networking with backoff, route handlers — thin orchestration on top of `server_lib/` |
+| `server_lib/` | Pure Python package: `jobs_taxonomy.py` (OSM→category mapping + JOBS_PER_HA), `shannon.py` (compute_shannon_h), `population.py` (WALK_SPEED_M_PER_MIN, fill-polygon heuristic, Voronoi assignment, `compute_population_response`) |
 | `static/app.js` | Client logic (~2 500 lines): map, state, all features |
 | `static/index.html` / `style.css` | UI structure and design system |
 | `process_data.py` | One-shot: BGRI `.gpkg` → `data/census_data.geojson` + metadata |

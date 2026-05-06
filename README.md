@@ -198,7 +198,11 @@ Todas são opcionais (com defaults sensatos), definidas em `.env` ou no shell an
 │   ├── style.css           # Estilos
 │   └── app.js              # Lógica do cliente (Leaflet, estado, API calls)
 ├── tests/                  # Suite pytest (backend)
-├── server.py               # API Flask (isócronas, cálculo de população, export)
+├── server.py               # API Flask (rotas, caches ORS/Overpass, networking)
+├── server_lib/             # Lógica pura reutilizável
+│   ├── jobs_taxonomy.py    # OSM → categoria + estimativa de emprego
+│   ├── shannon.py          # Índice de mistura de usos (entropia normalizada)
+│   └── population.py       # Cálculo de população em isócronas (com urbanizações)
 ├── process_data.py         # Pré-processamento dos dados BGRI
 ├── requirements.txt
 ├── requirements-dev.txt    # pytest + mocks
